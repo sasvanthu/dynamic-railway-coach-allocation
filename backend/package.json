@@ -1,0 +1,21 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "type": "module",
+  "packageManager": "bun",
+  "scripts": {
+    "build": "cd ../frontend && bun install && npx vite build --outDir=../backend/frontend/dist",
+    "dev:local": "node local-server.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "encore.dev": "^1.56.0",
+    "express": "^4.21.2",
+    "mongodb": "^6.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3"
+  }
+}
