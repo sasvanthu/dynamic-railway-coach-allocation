@@ -20,6 +20,27 @@ interface RakeSharingMetrics {
   efficiency_score: number;
 }
 
+const generateRakeTransactions = (): RakeSharingTransaction[] => {
+  const zones = ["North", "South", "East", "West", "Central"];
+  const statuses = ["completed", "in_transit", "pending"];
+  
+  return Array.from({ length: 5 }, (_, i) => {
+    const fromZone = zones[Math.floor(Math.random() * zones.length)];
+    let toZone = zones[Math.floor(Math.random() * zones.length)];
+    while (toZone === fromZone) toZone = zones[Math.floor(Math.random() * zones.length)];
+    
+    return {
+      id: i + 1,
+      from_zone: fromZone,
+      to_zone: toZone,
+      rake_count: Math.floor(Math.random() * 8) + 1,
+      timestamp: new Date(Date.now() - Math.random() * 3600000).toISOString(),
+      savings_percentage: Math.floor(Math.random() * 15) + 10,
+      status: statuses[Math.floor(Math.random() * statuses.length)],
+    };
+  });
+};
+
 export default function RakeSharingNetworkPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<RakeSharingMetrics | null>(null);
@@ -30,41 +51,13 @@ export default function RakeSharingNetworkPage() {
       try {
         setLoading(true);
         setMetrics({
-          total_shared_rakes: 156,
-          active_zones: 8,
-          cost_savings_percent: 23,
-          efficiency_score: 88,
+          total_shared_rakes: Math.floor(Math.random() * 250) + 100,
+          active_zones: Math.floor(Math.random() * 4) + 5,
+          cost_savings_percent: Math.floor(Math.random() * 15) + 15,
+          efficiency_score: Math.floor(Math.random() * 15) + 80,
         });
 
-        setTransactions([
-          {
-            id: 1,
-            from_zone: "North",
-            to_zone: "South",
-            rake_count: 4,
-            timestamp: new Date(Date.now() - 300000).toISOString(),
-            savings_percentage: 18,
-            status: "completed",
-          },
-          {
-            id: 2,
-            from_zone: "East",
-            to_zone: "West",
-            rake_count: 3,
-            timestamp: new Date(Date.now() - 900000).toISOString(),
-            savings_percentage: 25,
-            status: "completed",
-          },
-          {
-            id: 3,
-            from_zone: "Central",
-            to_zone: "North",
-            rake_count: 2,
-            timestamp: new Date(Date.now() - 1500000).toISOString(),
-            savings_percentage: 20,
-            status: "in_transit",
-          },
-        ]);
+        setTransactions(generateRakeTransactions());
       } catch (error) {
         console.error("Error fetching rake sharing data:", error);
       } finally {
@@ -73,7 +66,7 @@ export default function RakeSharingNetworkPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(fetchData, 18000);
     return () => clearInterval(interval);
   }, []);
 

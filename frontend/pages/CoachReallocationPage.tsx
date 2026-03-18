@@ -23,6 +23,22 @@ interface ReallocationMetrics {
   capacity_optimization_pct: number;
 }
 
+const generateReallocationEvents = (): ReallocationEvent[] => {
+  const reasons = ["Demand surge detected", "Capacity optimization", "Proactive reallocation", "Load balancing"];
+  const statuses = ["completed", "in_progress"];
+  
+  return Array.from({ length: 5 }, (_, i) => ({
+    id: i + 1,
+    timestamp: new Date(Date.now() - Math.random() * 3600000).toISOString(),
+    coach_id: `C-${12345 + i}`,
+    from_train: `${12051 + Math.floor(Math.random() * 10)}`,
+    to_train: `${12051 + Math.floor(Math.random() * 10)}`,
+    reason: reasons[Math.floor(Math.random() * reasons.length)],
+    impact_score: 0.75 + Math.random() * 0.25,
+    status: statuses[Math.floor(Math.random() * statuses.length)],
+  }));
+};
+
 export default function CoachReallocationPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<ReallocationMetrics | null>(null);
@@ -32,47 +48,15 @@ export default function CoachReallocationPage() {
     const fetchData = async () => {
       try {
         setLoading(true);
-        // Simulated data - replace with actual API calls
         setMetrics({
-          reallocations_today: 42,
-          reallocations_in_progress: 3,
-          avg_reallocation_time_minutes: 12,
-          coaches_optimized: 156,
-          capacity_optimization_pct: 94,
+          reallocations_today: Math.floor(Math.random() * 50) + 20,
+          reallocations_in_progress: Math.floor(Math.random() * 8) + 1,
+          avg_reallocation_time_minutes: Math.floor(Math.random() * 15) + 8,
+          coaches_optimized: Math.floor(Math.random() * 200) + 100,
+          capacity_optimization_pct: Math.floor(Math.random() * 10) + 85,
         });
         
-        setEvents([
-          {
-            id: 1,
-            timestamp: new Date().toISOString(),
-            coach_id: "C-12345",
-            from_train: "12051",
-            to_train: "12052",
-            reason: "Demand surge detected",
-            impact_score: 0.95,
-            status: "completed",
-          },
-          {
-            id: 2,
-            timestamp: new Date(Date.now() - 600000).toISOString(),
-            coach_id: "C-12346",
-            from_train: "12053",
-            to_train: "12054",
-            reason: "Capacity optimization",
-            impact_score: 0.87,
-            status: "completed",
-          },
-          {
-            id: 3,
-            timestamp: new Date(Date.now() - 120000).toISOString(),
-            coach_id: "C-12347",
-            from_train: "12055",
-            to_train: "12056",
-            reason: "Proactive reallocation",
-            impact_score: 0.92,
-            status: "in_progress",
-          },
-        ]);
+        setEvents(generateReallocationEvents());
       } catch (error) {
         console.error("Error fetching reallocation data:", error);
       } finally {
@@ -81,7 +65,7 @@ export default function CoachReallocationPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, []);
 

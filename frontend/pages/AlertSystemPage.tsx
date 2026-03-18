@@ -21,6 +21,29 @@ interface AlertMetrics {
   customer_satisfaction_percent: number;
 }
 
+const generateAlerts = (): SMSAlert[] => {
+  const types = ["Disruption Alert", "Seat Availability", "Coach Addition Alert", "Critical Alert", "Service Update"];
+  const messages = [
+    `Train delay notification - Please plan accordingly`,
+    `Seat availability update for your route`,
+    `Extra coaches added to improve your journey`,
+    `Service disruption - Alternative routes available`,
+    `Real-time status update available now`,
+  ];
+  const severities = ["normal", "high", "critical"];
+  
+  return Array.from({ length: 6 }, (_, i) => ({
+    id: i + 1,
+    type: types[Math.floor(Math.random() * types.length)],
+    severity: severities[Math.floor(Math.random() * severities.length)],
+    message: messages[Math.floor(Math.random() * messages.length)],
+    recipients_count: Math.floor(Math.random() * 10000) + 2000,
+    delivery_status: Math.random() > 0.3 ? "delivered" : "in_delivery",
+    sent_at: new Date(Date.now() - Math.random() * 3600000).toISOString(),
+    delivery_rate_percent: Math.floor(Math.random() * 8) + 92,
+  }));
+};
+
 export default function AlertSystemPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
@@ -30,55 +53,16 @@ export default function AlertSystemPage() {
     const fetchData = async () => {
       try {
         setLoading(true);
+        const alertData = generateAlerts();
+        
         setMetrics({
-          total_alerts_today: 156,
-          delivery_rate: 98,
-          avg_response_time_minutes: 3,
-          customer_satisfaction_percent: 91,
+          total_alerts_today: Math.floor(Math.random() * 100) + 80,
+          delivery_rate: Math.floor(Math.random() * 3) + 96,
+          avg_response_time_minutes: Math.floor(Math.random() * 3) + 2,
+          customer_satisfaction_percent: Math.floor(Math.random() * 5) + 87,
         });
 
-        setAlerts([
-          {
-            id: 1,
-            type: "Disruption Alert",
-            severity: "high",
-            message: "Train 12051 delayed by 15 minutes. Please plan accordingly.",
-            recipients_count: 3420,
-            delivery_status: "delivered",
-            sent_at: new Date(Date.now() - 300000).toISOString(),
-            delivery_rate_percent: 99,
-          },
-          {
-            id: 2,
-            type: "Seat Availability",
-            severity: "normal",
-            message: "Train 12052 has seats available for route North-South.",
-            recipients_count: 5680,
-            delivery_status: "delivered",
-            sent_at: new Date(Date.now() - 900000).toISOString(),
-            delivery_rate_percent: 98,
-          },
-          {
-            id: 3,
-            type: "Coach Addition Alert",
-            severity: "normal",
-            message: "Extra coaches added to Train 12053 for improved comfort.",
-            recipients_count: 4120,
-            delivery_status: "in_delivery",
-            sent_at: new Date(Date.now() - 450000).toISOString(),
-            delivery_rate_percent: 87,
-          },
-          {
-            id: 4,
-            type: "Critical Alert",
-            severity: "critical",
-            message: "Service suspended on Route C. Alternative routes recommended.",
-            recipients_count: 8900,
-            delivery_status: "delivered",
-            sent_at: new Date(Date.now() - 1500000).toISOString(),
-            delivery_rate_percent: 97,
-          },
-        ]);
+        setAlerts(alertData);
       } catch (error) {
         console.error("Error fetching alert data:", error);
       } finally {
@@ -87,7 +71,7 @@ export default function AlertSystemPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(fetchData, 17000);
     return () => clearInterval(interval);
   }, []);
 

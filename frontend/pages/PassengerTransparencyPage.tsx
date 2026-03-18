@@ -22,6 +22,28 @@ interface PassengerMetrics {
   on_time_performance_percent: number;
 }
 
+const stations = ["Central Station", "South Terminal", "North Junction", "East Platform", "West Gateway", "Mid Town Hub"];
+
+const generatePassengerUpdates = (): PassengerUpdate[] => {
+  return Array.from({ length: 6 }, (_, i) => {
+    const currentIdx = Math.floor(Math.random() * (stations.length - 1));
+    const nextIdx = currentIdx + 1;
+    const delayMinutes = Math.random() > 0.7 ? Math.floor(Math.random() * 15) + 1 : 0;
+    
+    return {
+      id: i + 1,
+      train_number: `${12000 + Math.floor(Math.random() * 100)}`,
+      current_station: stations[currentIdx],
+      next_station: stations[nextIdx],
+      estimated_arrival: new Date(Date.now() + (Math.random() * 3600000) + 600000).toISOString(),
+      occupancy_level: Math.floor(Math.random() * 60) + 30,
+      seats_available: Math.floor(Math.random() * 800) + 50,
+      delay_minutes: delayMinutes,
+      status: delayMinutes > 10 ? "major_delay" : delayMinutes > 0 ? "minor_delay" : "on_time",
+    };
+  });
+};
+
 export default function PassengerTransparencyPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<PassengerMetrics | null>(null);
@@ -31,48 +53,16 @@ export default function PassengerTransparencyPage() {
     const fetchData = async () => {
       try {
         setLoading(true);
+        const updateData = generatePassengerUpdates();
+        
         setMetrics({
-          active_passengers: 45230,
-          real_time_updates: 1284,
-          satisfaction_score: 8.4,
-          on_time_performance_percent: 94,
+          active_passengers: Math.floor(Math.random() * 50000) + 30000,
+          real_time_updates: Math.floor(Math.random() * 1000) + 800,
+          satisfaction_score: (Math.random() * 1 + 7.5).toFixed(1) as any,
+          on_time_performance_percent: Math.floor(Math.random() * 10) + 88,
         });
 
-        setUpdates([
-          {
-            id: 1,
-            train_number: "12051",
-            current_station: "Central Station",
-            next_station: "South Terminal",
-            estimated_arrival: new Date(Date.now() + 1200000).toISOString(),
-            occupancy_level: 85,
-            seats_available: 127,
-            delay_minutes: 0,
-            status: "on_time",
-          },
-          {
-            id: 2,
-            train_number: "12052",
-            current_station: "East Platform",
-            next_station: "North Junction",
-            estimated_arrival: new Date(Date.now() + 1800000).toISOString(),
-            occupancy_level: 62,
-            seats_available: 312,
-            delay_minutes: 5,
-            status: "minor_delay",
-          },
-          {
-            id: 3,
-            train_number: "12053",
-            current_station: "West Gate",
-            next_station: "Central Station",
-            estimated_arrival: new Date(Date.now() + 900000).toISOString(),
-            occupancy_level: 45,
-            seats_available: 678,
-            delay_minutes: 0,
-            status: "on_time",
-          },
-        ]);
+        setUpdates(updateData);
       } catch (error) {
         console.error("Error fetching passenger transparency data:", error);
       } finally {
@@ -81,7 +71,7 @@ export default function PassengerTransparencyPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 20000);
+    const interval = setInterval(fetchData, 16000);
     return () => clearInterval(interval);
   }, []);
 

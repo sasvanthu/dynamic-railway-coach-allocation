@@ -22,6 +22,30 @@ interface SimulationMetrics {
   avg_accuracy_percent: number;
 }
 
+const generateScenarios = (): SimulationScenario[] => {
+  const types = ["demand_surge", "cascade_disruption", "resource_constraint", "weather_impact", "maintenance_window"];
+  const statuses = ["running", "completed", "paused"];
+  const scenarioNames = [
+    "Rush Hour Peak Load Simulation",
+    "Zone-Wide Disruption Cascade",
+    "Real-Time Coach Shortage",
+    "Weather Impact Analysis",
+    "Maintenance Window Optimization",
+  ];
+  
+  return Array.from({ length: 5 }, (_, i) => ({
+    id: i + 1,
+    name: scenarioNames[i],
+    description: `Simulation scenario ${i + 1} testing railway system capabilities`,
+    scenario_type: types[i],
+    duration_hours: Math.floor(Math.random() * 8) + 2,
+    stations_affected: Math.floor(Math.random() * 15) + 5,
+    expected_impact: `Test scenario impact on railway operations`,
+    created_at: new Date(Date.now() - Math.random() * 432000000).toISOString(),
+    status: statuses[Math.floor(Math.random() * statuses.length)],
+  }));
+};
+
 export default function SimulationPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<SimulationMetrics | null>(null);
@@ -32,48 +56,17 @@ export default function SimulationPage() {
     const fetchData = async () => {
       try {
         setLoading(true);
+        const scenarioData = generateScenarios();
+        const runningCount = scenarioData.filter(s => s.status === "running").length;
+        
         setMetrics({
-          active_simulations: 2,
-          scenarios_created: 34,
-          total_simulation_hours: 156,
-          avg_accuracy_percent: 92,
+          active_simulations: runningCount,
+          scenarios_created: Math.floor(Math.random() * 50) + 20,
+          total_simulation_hours: Math.floor(Math.random() * 300) + 100,
+          avg_accuracy_percent: Math.floor(Math.random() * 8) + 88,
         });
 
-        setScenarios([
-          {
-            id: 1,
-            name: "Rush Hour Peak Load Simulation",
-            description: "Peak hour scenario with 45% above normal passenger demand",
-            scenario_type: "demand_surge",
-            duration_hours: 4,
-            stations_affected: 12,
-            expected_impact: "Test dynamic coach reallocation",
-            created_at: new Date(Date.now() - 86400000).toISOString(),
-            status: "completed",
-          },
-          {
-            id: 2,
-            name: "Zone-Wide Disruption Cascade",
-            description: "Simulate disruption cascade across three zones",
-            scenario_type: "cascade_disruption",
-            duration_hours: 6,
-            stations_affected: 18,
-            expected_impact: "Evaluate disruption response capabilities",
-            created_at: new Date(Date.now() - 172800000).toISOString(),
-            status: "completed",
-          },
-          {
-            id: 3,
-            name: "Real-Time Coach Shortage",
-            description: "Simulate limited coach availability and reallocation constraints",
-            scenario_type: "resource_constraint",
-            duration_hours: 3,
-            stations_affected: 8,
-            expected_impact: "Test rake sharing optimization",
-            created_at: new Date(Date.now() - 259200000).toISOString(),
-            status: "running",
-          },
-        ]);
+        setScenarios(scenarioData);
       } catch (error) {
         console.error("Error fetching simulation data:", error);
       } finally {
@@ -82,7 +75,7 @@ export default function SimulationPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(fetchData, 19000);
     return () => clearInterval(interval);
   }, []);
 

@@ -21,6 +21,22 @@ interface CascadeMetrics {
   mitigation_success_rate_pct: number;
 }
 
+const generateCascadeEvents = (): CascadeEvent[] => {
+  const regions = ["Zone-A", "Zone-B", "Zone-C", "Zone-D", "Zone-E"];
+  const statuses = ["mitigating", "resolved", "escalating"];
+  
+  return Array.from({ length: 3 }, (_, i) => ({
+    id: i + 1,
+    primary_disruption_id: 100 + Math.floor(Math.random() * 50),
+    cascade_level: Math.floor(Math.random() * 3) + 1,
+    affected_trains: Math.floor(Math.random() * 12) + 2,
+    detection_time: new Date(Date.now() - Math.random() * 3600000).toISOString(),
+    mitigation_status: statuses[Math.floor(Math.random() * statuses.length)],
+    affected_regions: [regions[Math.floor(Math.random() * regions.length)], regions[Math.floor(Math.random() * regions.length)]],
+    confidence: 0.75 + Math.random() * 0.25,
+  }));
+};
+
 export default function CascadeDisruptionPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<CascadeMetrics | null>(null);
@@ -31,34 +47,13 @@ export default function CascadeDisruptionPage() {
       try {
         setLoading(true);
         setMetrics({
-          active_cascades: 2,
-          prevented_cascades: 18,
-          avg_detection_time_minutes: 4,
-          mitigation_success_rate_pct: 92,
+          active_cascades: Math.floor(Math.random() * 5),
+          prevented_cascades: Math.floor(Math.random() * 30) + 10,
+          avg_detection_time_minutes: Math.floor(Math.random() * 6) + 2,
+          mitigation_success_rate_pct: Math.floor(Math.random() * 10) + 85,
         });
 
-        setCascades([
-          {
-            id: 1,
-            primary_disruption_id: 101,
-            cascade_level: 3,
-            affected_trains: 7,
-            detection_time: new Date(Date.now() - 600000).toISOString(),
-            mitigation_status: "mitigating",
-            affected_regions: ["Zone-A", "Zone-B"],
-            confidence: 0.95,
-          },
-          {
-            id: 2,
-            primary_disruption_id: 102,
-            cascade_level: 2,
-            affected_trains: 4,
-            detection_time: new Date(Date.now() - 1200000).toISOString(),
-            mitigation_status: "resolved",
-            affected_regions: ["Zone-C"],
-            confidence: 0.87,
-          },
-        ]);
+        setCascades(generateCascadeEvents());
       } catch (error) {
         console.error("Error fetching cascade data:", error);
       } finally {
@@ -67,7 +62,7 @@ export default function CascadeDisruptionPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(fetchData, 20000);
     return () => clearInterval(interval);
   }, []);
 

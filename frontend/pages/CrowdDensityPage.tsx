@@ -21,6 +21,37 @@ interface CrowdMetrics {
   detection_accuracy_percent: number;
 }
 
+const stationGroups = [
+  { name: "Central Station", code: "CST", capacity: 5000 },
+  { name: "South Terminal", code: "ST", capacity: 3500 },
+  { name: "North Junction", code: "NJ", capacity: 5000 },
+  { name: "East Platform", code: "EP", capacity: 2500 },
+  { name: "West Gateway", code: "WG", capacity: 4000 },
+  { name: "Mid Town Hub", code: "MTH", capacity: 3200 },
+];
+
+const generateStationDensities = (): StationDensity[] => {
+  return stationGroups.map((station, i) => {
+    const density = Math.floor(Math.random() * station.capacity * 0.95);
+    const occupancy = Math.floor((density / station.capacity) * 100);
+    
+    let alertLevel = "normal";
+    if (occupancy >= 90) alertLevel = "critical";
+    else if (occupancy >= 75) alertLevel = "high";
+    
+    return {
+      id: i + 1,
+      station_name: station.name,
+      station_code: station.code,
+      current_density: density,
+      max_capacity: station.capacity,
+      occupancy_percent: occupancy,
+      alert_level: alertLevel,
+      detected_at: new Date().toISOString(),
+    };
+  });
+};
+
 export default function CrowdDensityPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<CrowdMetrics | null>(null);
@@ -30,55 +61,19 @@ export default function CrowdDensityPage() {
     const fetchData = async () => {
       try {
         setLoading(true);
+        const stationData = generateStationDensities();
+        
+        const highDensityCount = stationData.filter(s => s.alert_level !== "normal").length;
+        const avgOccupancy = Math.floor(stationData.reduce((sum, s) => sum + s.occupancy_percent, 0) / stationData.length);
+        
         setMetrics({
-          stations_monitored: 45,
-          high_density_stations: 8,
-          avg_occupancy_percent: 72,
-          detection_accuracy_percent: 96,
+          stations_monitored: stationData.length,
+          high_density_stations: highDensityCount,
+          avg_occupancy_percent: avgOccupancy,
+          detection_accuracy_percent: Math.floor(Math.random() * 3) + 94,
         });
 
-        setStations([
-          {
-            id: 1,
-            station_name: "Central Station",
-            station_code: "CST",
-            current_density: 4250,
-            max_capacity: 5000,
-            occupancy_percent: 85,
-            alert_level: "high",
-            detected_at: new Date().toISOString(),
-          },
-          {
-            id: 2,
-            station_name: "South Terminal",
-            station_code: "ST",
-            current_density: 2150,
-            max_capacity: 3500,
-            occupancy_percent: 61,
-            alert_level: "normal",
-            detected_at: new Date().toISOString(),
-          },
-          {
-            id: 3,
-            station_name: "North Junction",
-            station_code: "NJ",
-            current_density: 4850,
-            max_capacity: 5000,
-            occupancy_percent: 97,
-            alert_level: "critical",
-            detected_at: new Date().toISOString(),
-          },
-          {
-            id: 4,
-            station_name: "East Platform",
-            station_code: "EP",
-            current_density: 1200,
-            max_capacity: 2500,
-            occupancy_percent: 48,
-            alert_level: "normal",
-            detected_at: new Date().toISOString(),
-          },
-        ]);
+        setStations(stationData);
       } catch (error) {
         console.error("Error fetching crowd density data:", error);
       } finally {
@@ -87,7 +82,7 @@ export default function CrowdDensityPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 15000);
+    const interval = setInterval(fetchData, 12000);
     return () => clearInterval(interval);
   }, []);
 

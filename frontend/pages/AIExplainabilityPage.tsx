@@ -20,6 +20,31 @@ interface ExplainabilityMetrics {
   model_interpretability_score: number;
 }
 
+const generateDecisions = (): Decision[] => {
+  const types = ["Coach Reallocation", "Disruption Prediction", "Rake Sharing", "Demand Forecast", "Capacity Planning"];
+  const impacts = [
+    "18% capacity improvement",
+    "Prevent 7-train cascade",
+    "23% cost reduction",
+    "52 more passengers accommodated",
+    "31% utilization increase",
+  ];
+  
+  return Array.from({ length: 4 }, (_, i) => ({
+    id: i + 1,
+    decision_type: types[Math.floor(Math.random() * types.length)],
+    recommendation: `Recommendation ${i + 1}: ${Math.random() > 0.5 ? "Increase" : "Decrease"} allocation by ${Math.floor(Math.random() * 30) + 5} units`,
+    confidence: 0.80 + Math.random() * 0.20,
+    key_factors: [
+      `Primary factor (${Math.floor(Math.random() * 10) + 80}%)`,
+      `Secondary factor (${Math.floor(Math.random() * 10) + 75}%)`,
+      `Tertiary factor (${Math.floor(Math.random() * 10) + 70}%)`,
+    ],
+    impact_estimate: impacts[Math.floor(Math.random() * impacts.length)],
+    timestamp: new Date(Date.now() - Math.random() * 3600000).toISOString(),
+  }));
+};
+
 export default function AIExplainabilityPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<ExplainabilityMetrics | null>(null);
@@ -30,41 +55,13 @@ export default function AIExplainabilityPage() {
       try {
         setLoading(true);
         setMetrics({
-          model_accuracy_pct: 94,
-          avg_confidence: 0.88,
-          decisions_explained: 2341,
-          model_interpretability_score: 92,
+          model_accuracy_pct: Math.floor(Math.random() * 8) + 90,
+          avg_confidence: 0.82 + Math.random() * 0.15,
+          decisions_explained: Math.floor(Math.random() * 1000) + 1500,
+          model_interpretability_score: Math.floor(Math.random() * 8) + 88,
         });
 
-        setDecisions([
-          {
-            id: 1,
-            decision_type: "Coach Reallocation",
-            recommendation: "Move 2 coaches from Train 12051 to Train 12052",
-            confidence: 0.96,
-            key_factors: ["Demand surge (92%)", "Capacity analysis (88%)", "Zone coverage (85%)"],
-            impact_estimate: "18% capacity improvement",
-            timestamp: new Date(Date.now() - 600000).toISOString(),
-          },
-          {
-            id: 2,
-            decision_type: "Disruption Prediction",
-            recommendation: "High probability of cascade in Zone-B detected",
-            confidence: 0.91,
-            key_factors: ["Weather patterns (89%)", "Historical data (87%)", "Current load (84%)"],
-            impact_estimate: "Prevent 7-train cascade",
-            timestamp: new Date(Date.now() - 1200000).toISOString(),
-          },
-          {
-            id: 3,
-            decision_type: "Rake Sharing",
-            recommendation: "Share 3 rakes from North to South zone",
-            confidence: 0.85,
-            key_factors: ["Demand forecast (90%)", "Cost optimization (82%)", "Zone distance (79%)"],
-            impact_estimate: "23% cost reduction",
-            timestamp: new Date(Date.now() - 1800000).toISOString(),
-          },
-        ]);
+        setDecisions(generateDecisions());
       } catch (error) {
         console.error("Error fetching AI explainability data:", error);
       } finally {
@@ -73,7 +70,7 @@ export default function AIExplainabilityPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(fetchData, 20000);
     return () => clearInterval(interval);
   }, []);
 
