@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Train, MapPin, AlertTriangle, TrendingUp, Network, MessageSquare, LayoutDashboard, Zap } from "lucide-react";
+import { Train, MapPin, AlertTriangle, TrendingUp, Network, MessageSquare, LayoutDashboard, Zap, Clock, Globe, Brain, Camera, Users, Phone, Gamepad2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 const navItems = [
@@ -10,6 +10,14 @@ const navItems = [
   { to: "/forecasts", icon: TrendingUp, label: "Forecasts" },
   { to: "/rake-transfers", icon: Network, label: "Rake Transfers" },
   { to: "/sentiment", icon: MessageSquare, label: "Sentiment" },
+  { to: "/coach-reallocation", icon: Clock, label: "Coach Reallocation" },
+  { to: "/cascade-disruptions", icon: Network, label: "Cascade Engine" },
+  { to: "/rake-sharing", icon: Globe, label: "Rake Sharing" },
+  { to: "/ai-explainability", icon: Brain, label: "AI Explainability" },
+  { to: "/crowd-density", icon: Camera, label: "Crowd Density" },
+  { to: "/passenger-transparency", icon: Users, label: "Passenger App" },
+  { to: "/alerts", icon: Phone, label: "SMS Alerts" },
+  { to: "/simulation", icon: Gamepad2, label: "Simulation" },
 ];
 
 export default function Sidebar() {
@@ -38,7 +46,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <nav className="flex-1 p-4 space-y-1">
+      <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
