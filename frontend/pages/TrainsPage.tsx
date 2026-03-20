@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ChevronRight, X, Zap } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ChevronRight, RefreshCw, X, Zap, Clock } from "lucide-react";
 import backend from "~backend/client";
 import LoadingSpinner from "../components/LoadingSpinner";
 import SeverityBadge from "../components/SeverityBadge";
@@ -16,6 +16,14 @@ interface Train {
   status: string;
   coach_count: number;
   demand_score: number | null;
+  route_name?: string | null;
+  route_distance_km?: number | null;
+  route_source?: string;
+  route_last_synced_at?: string | null;
+  live_delay_minutes?: number | null;
+  live_status_source?: string;
+  live_status_provider?: string;
+  live_status_updated_at?: string | null;
 }
 
 interface CoachAllocation {
@@ -36,6 +44,22 @@ interface TrainDetail {
   destination: string;
   status: string;
   allocations: CoachAllocation[];
+  live_route?: {
+    route_name: string;
+    distance_km: number;
+    source: string;
+    fetched_at: string;
+  } | null;
+  live_status?: {
+    status: string;
+    delay_minutes: number | null;
+    source: string;
+    provider: string;
+    current_station_code?: string | null;
+    current_station_name?: string | null;
+    message?: string | null;
+    fetched_at: string;
+  } | null;
 }
 
 const coachColors: Record<string, string> = {
@@ -60,14 +84,30 @@ export default function TrainsPage() {
   const [selected, setSelected] = useState<TrainDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [injecting, setInjecting] = useState(false);
+  const [syncingRoutes, setSyncingRoutes] = useState(false);
+  const [lastRefreshTime, setLastRefreshTime] = useState<string | null>(null);
   const { toast } = useToast();
 
+  const REFRESH_INTERVAL = parseInt(import.meta.env.VITE_TRAINS_REFRESH_MS || "20000");
+
+  const loadTrains = useCallback(async () => {
+    try {
+      const result = await backend.railmind.listTrains();
+      setTrains(result.trains as Train[]);
+      setLastRefreshTime(new Date().toLocaleTimeString());
+    } catch (err) {
+      console.error(err);
+      toast({ title: "Failed to load trains", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
   useEffect(() => {
-    backend.railmind.listTrains()
-      .then((r) => setTrains(r.trains))
-      .catch((err) => { console.error(err); toast({ title: "Failed to load trains", variant: "destructive" }); })
-      .finally(() => setLoading(false));
-  }, []);
+    void loadTrains();
+    const interval = setInterval(() => void loadTrains(), REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [loadTrains, REFRESH_INTERVAL]);
 
   const openDetail = async (id: number) => {
     setDetailLoading(true);
@@ -79,6 +119,24 @@ export default function TrainsPage() {
       toast({ title: "Failed to load train detail", variant: "destructive" });
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  const syncLiveRoutes = async () => {
+    setSyncingRoutes(true);
+    try {
+      const result = await backend.railmind.syncLiveRoutes();
+      toast({ title: "Live routes synced", description: `${result.synced}/${result.total} routes fetched from OpenStreetMap` });
+      await loadTrains();
+      if (selected) {
+        const detail = await backend.railmind.getTrain({ id: selected.id, refresh: true });
+        setSelected(detail as TrainDetail);
+      }
+    } catch (err) {
+      console.error(err);
+      toast({ title: "Failed to sync live routes", variant: "destructive" });
+    } finally {
+      setSyncingRoutes(false);
     }
   };
 
@@ -122,9 +180,24 @@ export default function TrainsPage() {
 
   return (
     <div className="p-6">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-zinc-100">Train Management</h2>
-        <p className="text-sm text-zinc-500 mt-0.5">Coach composition and allocation intelligence</p>
+      <div className="mb-6 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold text-zinc-100">Train Management</h2>
+          <p className="text-sm text-zinc-500 mt-0.5">Coach composition and allocation intelligence</p>
+          {lastRefreshTime && (
+            <p className="text-xs text-zinc-600 mt-2 flex items-center gap-1">
+              <Clock className="w-3 h-3" /> Last updated: {lastRefreshTime}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={syncLiveRoutes}
+          disabled={syncingRoutes}
+          className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          <RefreshCw className={`w-4 h-4 ${syncingRoutes ? "animate-spin" : ""}`} />
+          {syncingRoutes ? "Syncing Routes..." : "Sync Live Routes"}
+        </button>
       </div>
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
@@ -151,9 +224,21 @@ export default function TrainsPage() {
                   <div className="font-semibold text-zinc-200">{train.train_number}</div>
                   <div className="text-xs text-zinc-500">{train.name}</div>
                 </td>
-                <td className="px-4 py-3 text-zinc-400 font-mono text-xs">{train.origin} → {train.destination}</td>
+                <td className="px-4 py-3">
+                  <div className="text-zinc-400 font-mono text-xs">{train.origin} → {train.destination}</div>
+                  <div className="text-[11px] text-zinc-500 mt-0.5">
+                    {train.route_distance_km ? `${Math.round(train.route_distance_km)} km` : "Distance N/A"} • {train.route_source === "osm-live" ? "Live OSM route" : "Fallback geodesic"}
+                  </div>
+                </td>
                 <td className="px-4 py-3 text-zinc-400 text-xs">{new Date(train.departure_time).toLocaleString()}</td>
-                <td className="px-4 py-3"><SeverityBadge severity={train.status} /></td>
+                <td className="px-4 py-3">
+                  <SeverityBadge severity={train.status} />
+                  <div className="text-[11px] text-zinc-600 mt-1">
+                    {train.live_delay_minutes != null && train.live_delay_minutes > 0
+                      ? `${train.live_delay_minutes} min delay`
+                      : "No delay"}
+                  </div>
+                </td>
                 <td className="px-4 py-3">
                   <span className="text-zinc-300 font-semibold">{train.coach_count}</span>
                   <span className="text-zinc-600 text-xs ml-1">coaches</span>
@@ -194,6 +279,18 @@ export default function TrainsPage() {
                   <div>
                     <h3 className="text-lg font-bold text-zinc-100">{selected.train_number} — {selected.name}</h3>
                     <p className="text-sm text-zinc-500">{selected.origin} → {selected.destination}</p>
+                    {selected.live_route && (
+                      <p className="text-xs text-zinc-500 mt-1">
+                        {Math.round(selected.live_route.distance_km)} km • {selected.live_route.source === "osm-live" ? "Live OSM route" : "Fallback"} • Synced {new Date(selected.live_route.fetched_at).toLocaleString()}
+                      </p>
+                    )}
+                    {selected.live_status && (
+                      <p className="text-xs text-zinc-500 mt-1">
+                        Status {selected.live_status.status.replace("_", " ")} • {selected.live_status.delay_minutes ? `${selected.live_status.delay_minutes} min delay` : "No delay"}
+                        {selected.live_status.current_station_code ? ` • Near ${selected.live_status.current_station_code}` : ""}
+                        {` • ${selected.live_status.provider}`}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <SeverityBadge severity={selected.status} />

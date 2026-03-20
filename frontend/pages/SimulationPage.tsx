@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Play, Pause, RotateCcw, Zap, TrendingUp, Activity } from "lucide-react";
 import KPICard from "../components/KPICard";
 import LoadingSpinner from "../components/LoadingSpinner";
+import backend from "~backend/client";
+import { useToast } from "@/components/ui/use-toast";
 
 interface SimulationScenario {
   id: number;
@@ -22,62 +24,149 @@ interface SimulationMetrics {
   avg_accuracy_percent: number;
 }
 
-const generateScenarios = (): SimulationScenario[] => {
-  const types = ["demand_surge", "cascade_disruption", "resource_constraint", "weather_impact", "maintenance_window"];
-  const statuses = ["running", "completed", "paused"];
-  const scenarioNames = [
-    "Rush Hour Peak Load Simulation",
-    "Zone-Wide Disruption Cascade",
-    "Real-Time Coach Shortage",
-    "Weather Impact Analysis",
-    "Maintenance Window Optimization",
-  ];
-  
-  return Array.from({ length: 5 }, (_, i) => ({
-    id: i + 1,
-    name: scenarioNames[i],
-    description: `Simulation scenario ${i + 1} testing railway system capabilities`,
-    scenario_type: types[i],
-    duration_hours: Math.floor(Math.random() * 8) + 2,
-    stations_affected: Math.floor(Math.random() * 15) + 5,
-    expected_impact: `Test scenario impact on railway operations`,
-    created_at: new Date(Date.now() - Math.random() * 432000000).toISOString(),
-    status: statuses[Math.floor(Math.random() * statuses.length)],
-  }));
-};
+interface LiveEvent {
+  id: number;
+  name: string;
+  type: string;
+  start_date: string;
+  end_date: string;
+  expected_attendance: number;
+}
+
+interface LiveDisruption {
+  id: number;
+  severity: string;
+  status: string;
+  detected_at: string;
+  cascade_impact?: {
+    affected_trains?: number[];
+    estimated_delay_min?: number;
+  };
+}
+
+interface RakeTransfer {
+  id: number;
+  from_zone: string;
+  to_zone: string;
+  coach_ids: number[];
+  scheduled_at: string;
+  status: string;
+}
+
+interface Forecast {
+  confidence: number;
+}
+
+const REFRESH_INTERVAL = Math.max(10_000, Number(import.meta.env.VITE_SIMULATION_REFRESH_MS ?? 19_000));
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
 
 export default function SimulationPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<SimulationMetrics | null>(null);
   const [scenarios, setScenarios] = useState<SimulationScenario[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const { toast } = useToast();
+
+  const load = useCallback(async () => {
+    const [eventsPayload, disruptionsPayload, forecastsPayload, transfersPayload] = await Promise.all([
+      backend.railmind.listEvents(),
+      backend.railmind.listDisruptions(),
+      backend.railmind.listForecasts({}),
+      backend.railmind.listRakeTransfers(),
+    ]);
+
+    const events = eventsPayload.events as LiveEvent[];
+    const disruptions = disruptionsPayload.disruptions as LiveDisruption[];
+    const forecasts = forecastsPayload.forecasts as Forecast[];
+    const transfers = transfersPayload.rake_transfers as RakeTransfer[];
+
+    const now = Date.now();
+
+    const eventScenarios: SimulationScenario[] = events.map((event) => {
+      const start = new Date(event.start_date).getTime();
+      const end = new Date(event.end_date).getTime();
+      const durationHours = Math.max(1, Math.round(Math.max(1, end - start) / 3_600_000));
+
+      let status = "paused";
+      if (now < start) status = "paused";
+      else if (now >= start && now <= end) status = "running";
+      else status = "completed";
+
+      return {
+        id: event.id,
+        name: `${event.name} Scenario`,
+        description: `Event load simulation for ${event.name}`,
+        scenario_type: "demand_surge",
+        duration_hours: durationHours,
+        stations_affected: clamp(Math.round(event.expected_attendance / 300000), 3, 25),
+        expected_impact: `${Math.round(event.expected_attendance / 1000)}K passengers pressure`,
+        created_at: event.start_date,
+        status,
+      };
+    });
+
+    const disruptionScenarios: SimulationScenario[] = disruptions.map((disruption) => ({
+      id: 10_000 + disruption.id,
+      name: `Disruption ${disruption.id} Cascade`,
+      description: `Operational stress simulation for ${disruption.severity} disruption`,
+      scenario_type: "cascade_disruption",
+      duration_hours: clamp(Math.round((disruption.cascade_impact?.estimated_delay_min ?? 90) / 30), 2, 10),
+      stations_affected: clamp(disruption.cascade_impact?.affected_trains?.length ?? 2, 2, 15),
+      expected_impact: `${disruption.cascade_impact?.estimated_delay_min ?? 0} min schedule shift`,
+      created_at: disruption.detected_at,
+      status: disruption.status === "active" ? "running" : "completed",
+    }));
+
+    const transferScenarios: SimulationScenario[] = transfers.slice(0, 6).map((transfer) => ({
+      id: 20_000 + transfer.id,
+      name: `Rake Shift ${transfer.from_zone} to ${transfer.to_zone}`,
+      description: `Resource rebalancing what-if for ${transfer.from_zone} and ${transfer.to_zone}`,
+      scenario_type: "resource_constraint",
+      duration_hours: 4,
+      stations_affected: clamp((transfer.coach_ids?.length ?? 1) * 2, 2, 12),
+      expected_impact: `${transfer.coach_ids?.length ?? 0} coaches moved`,
+      created_at: transfer.scheduled_at,
+      status: transfer.status === "approved" ? "running" : "paused",
+    }));
+
+    const scenarioData = [...eventScenarios, ...disruptionScenarios, ...transferScenarios]
+      .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+      .slice(0, 14);
+
+    const runningCount = scenarioData.filter((scenario) => scenario.status === "running").length;
+    const totalHours = scenarioData.reduce((sum, scenario) => sum + scenario.duration_hours, 0);
+    const avgForecastConfidence = forecasts.length
+      ? forecasts.reduce((sum, forecast) => sum + Number(forecast.confidence || 0), 0) / forecasts.length
+      : 0.88;
+
+    setMetrics({
+      active_simulations: runningCount,
+      scenarios_created: scenarioData.length,
+      total_simulation_hours: totalHours,
+      avg_accuracy_percent: Math.round(avgForecastConfidence * 100),
+    });
+    setScenarios(scenarioData);
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setLoading(true);
-        const scenarioData = generateScenarios();
-        const runningCount = scenarioData.filter(s => s.status === "running").length;
-        
-        setMetrics({
-          active_simulations: runningCount,
-          scenarios_created: Math.floor(Math.random() * 50) + 20,
-          total_simulation_hours: Math.floor(Math.random() * 300) + 100,
-          avg_accuracy_percent: Math.floor(Math.random() * 8) + 88,
-        });
-
-        setScenarios(scenarioData);
+        await load();
       } catch (error) {
         console.error("Error fetching simulation data:", error);
+        toast({ title: "Failed to load live simulation scenarios", variant: "destructive" });
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 19000);
+    void fetchData();
+    const interval = setInterval(() => void fetchData(), REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
+  }, [load, toast]);
 
   const getScenarioColor = (type: string) => {
     switch (type) {
@@ -123,25 +212,25 @@ export default function SimulationPage() {
             title="Active Simulations"
             value={metrics.active_simulations.toString()}
             icon={Activity}
-            trend={1}
+            delta="+1%"
           />
           <KPICard
             title="Total Scenarios Created"
             value={metrics.scenarios_created.toString()}
             icon={Play}
-            trend={5}
+            delta="+5%"
           />
           <KPICard
             title="Total Simulation Hours"
             value={metrics.total_simulation_hours.toString()}
             icon={TrendingUp}
-            trend={12}
+            delta="+12%"
           />
           <KPICard
             title="Avg Accuracy"
             value={`${metrics.avg_accuracy_percent}%`}
             icon={Zap}
-            trend={3}
+            delta="+3%"
           />
         </div>
       )}

@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Camera, Zap, AlertTriangle, TrendingUp } from "lucide-react";
 import KPICard from "../components/KPICard";
 import LoadingSpinner from "../components/LoadingSpinner";
+import backend from "~backend/client";
+import { useToast } from "@/components/ui/use-toast";
 
 interface StationDensity {
   id: number;
@@ -21,70 +23,112 @@ interface CrowdMetrics {
   detection_accuracy_percent: number;
 }
 
-const stationGroups = [
-  { name: "Central Station", code: "CST", capacity: 5000 },
-  { name: "South Terminal", code: "ST", capacity: 3500 },
-  { name: "North Junction", code: "NJ", capacity: 5000 },
-  { name: "East Platform", code: "EP", capacity: 2500 },
-  { name: "West Gateway", code: "WG", capacity: 4000 },
-  { name: "Mid Town Hub", code: "MTH", capacity: 3200 },
-];
+interface LiveStation {
+  id: number;
+  code: string;
+  name: string;
+  platform_count: number;
+  crowd_density: number | null;
+  alert_level: string;
+  last_updated: string | null;
+}
 
-const generateStationDensities = (): StationDensity[] => {
-  return stationGroups.map((station, i) => {
-    const density = Math.floor(Math.random() * station.capacity * 0.95);
-    const occupancy = Math.floor((density / station.capacity) * 100);
-    
-    let alertLevel = "normal";
-    if (occupancy >= 90) alertLevel = "critical";
-    else if (occupancy >= 75) alertLevel = "high";
-    
-    return {
-      id: i + 1,
-      station_name: station.name,
-      station_code: station.code,
-      current_density: density,
-      max_capacity: station.capacity,
-      occupancy_percent: occupancy,
-      alert_level: alertLevel,
-      detected_at: new Date().toISOString(),
-    };
-  });
-};
+interface LiveStationsPayload {
+  synced_external: number;
+  total: number;
+  summary: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
+  stations: unknown[];
+}
+
+const REFRESH_INTERVAL = Math.max(10_000, Number(import.meta.env.VITE_CROWD_DENSITY_REFRESH_MS ?? 12_000));
+
+function toFiniteNumber(value: unknown, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toNullableNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeStation(raw: unknown): LiveStation {
+  const station = (raw ?? {}) as Partial<LiveStation> & Record<string, unknown>;
+  return {
+    id: toFiniteNumber(station.id),
+    code: String(station.code ?? "N/A"),
+    name: String(station.name ?? "Unknown Station"),
+    platform_count: toFiniteNumber(station.platform_count, 8),
+    crowd_density: toNullableNumber(station.crowd_density),
+    alert_level: String(station.alert_level ?? "low"),
+    last_updated: station.last_updated == null ? null : String(station.last_updated),
+  };
+}
 
 export default function CrowdDensityPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<CrowdMetrics | null>(null);
   const [stations, setStations] = useState<StationDensity[]>([]);
+  const { toast } = useToast();
+
+  const load = useCallback(async () => {
+    const payload = (await backend.railmind.listLiveStations({ refresh: true })) as LiveStationsPayload;
+    const stationRows = Array.isArray(payload.stations) ? payload.stations.map((station) => normalizeStation(station)) : [];
+
+    const normalizedStations: StationDensity[] = stationRows.map((station) => {
+      const occupancy = Math.round((station.crowd_density ?? 0.45) * 100);
+      const maxCapacity = station.platform_count * 450;
+      return {
+        id: station.id,
+        station_name: station.name,
+        station_code: station.code,
+        current_density: Math.round(maxCapacity * (occupancy / 100)),
+        max_capacity: maxCapacity,
+        occupancy_percent: occupancy,
+        alert_level: station.alert_level,
+        detected_at: station.last_updated ?? new Date().toISOString(),
+      };
+    });
+
+    const avgOccupancy = normalizedStations.length
+      ? Math.round(normalizedStations.reduce((sum, station) => sum + station.occupancy_percent, 0) / normalizedStations.length)
+      : 0;
+
+    const highDensity = (payload.summary?.critical ?? 0) + (payload.summary?.high ?? 0);
+    const detectionAccuracy = payload.total > 0
+      ? Math.max(90, Math.min(100, Math.round((payload.synced_external / payload.total) * 100)))
+      : 90;
+
+    setMetrics({
+      stations_monitored: normalizedStations.length,
+      high_density_stations: highDensity,
+      avg_occupancy_percent: avgOccupancy,
+      detection_accuracy_percent: detectionAccuracy,
+    });
+    setStations(normalizedStations.sort((left, right) => right.occupancy_percent - left.occupancy_percent));
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setLoading(true);
-        const stationData = generateStationDensities();
-        
-        const highDensityCount = stationData.filter(s => s.alert_level !== "normal").length;
-        const avgOccupancy = Math.floor(stationData.reduce((sum, s) => sum + s.occupancy_percent, 0) / stationData.length);
-        
-        setMetrics({
-          stations_monitored: stationData.length,
-          high_density_stations: highDensityCount,
-          avg_occupancy_percent: avgOccupancy,
-          detection_accuracy_percent: Math.floor(Math.random() * 3) + 94,
-        });
-
-        setStations(stationData);
+        await load();
       } catch (error) {
         console.error("Error fetching crowd density data:", error);
+        toast({ title: "Failed to load live crowd density", variant: "destructive" });
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 12000);
+    void fetchData();
+    const interval = setInterval(() => void fetchData(), REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
+  }, [load, toast]);
 
   const getAlertColor = (alertLevel: string) => {
     switch (alertLevel) {
@@ -92,6 +136,9 @@ export default function CrowdDensityPage() {
         return "bg-red-900/40 text-red-400";
       case "high":
         return "bg-orange-900/40 text-orange-400";
+      case "medium":
+        return "bg-amber-900/40 text-amber-400";
+      case "low":
       case "normal":
         return "bg-emerald-900/40 text-emerald-400";
       default:
@@ -125,25 +172,25 @@ export default function CrowdDensityPage() {
             title="Stations Monitored"
             value={metrics.stations_monitored.toString()}
             icon={Camera}
-            trend={5}
+            delta="+5%"
           />
           <KPICard
             title="High Density Stations"
             value={metrics.high_density_stations.toString()}
             icon={AlertTriangle}
-            trend={-2}
+            delta="-2%"
           />
           <KPICard
             title="Avg Occupancy"
             value={`${metrics.avg_occupancy_percent}%`}
             icon={TrendingUp}
-            trend={3}
+            delta="+3%"
           />
           <KPICard
             title="Detection Accuracy"
             value={`${metrics.detection_accuracy_percent}%`}
             icon={Zap}
-            trend={1}
+            delta="+1%"
           />
         </div>
       )}

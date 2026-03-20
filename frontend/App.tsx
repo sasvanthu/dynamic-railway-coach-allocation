@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "@/components/ui/toaster";
 import Sidebar from "./components/Sidebar";
+import GlobalLiveRailMap from "./components/GlobalLiveRailMap";
 import Dashboard from "./pages/Dashboard";
 import TrainsPage from "./pages/TrainsPage";
 import StationsPage from "./pages/StationsPage";
@@ -24,6 +25,9 @@ export default function App() {
         <div className="flex h-screen overflow-hidden">
           <Sidebar />
           <main className="flex-1 overflow-y-auto bg-zinc-950">
+            <div className="p-4 pb-0">
+              <GlobalLiveRailMap />
+            </div>
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/trains" element={<TrainsPage />} />

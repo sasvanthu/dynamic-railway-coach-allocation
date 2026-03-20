@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Network, Zap, TrendingDown } from "lucide-react";
 import KPICard from "../components/KPICard";
 import LoadingSpinner from "../components/LoadingSpinner";
+import backend from "~backend/client";
+import { useToast } from "@/components/ui/use-toast";
 
 interface CascadeEvent {
   id: number;
@@ -21,50 +23,136 @@ interface CascadeMetrics {
   mitigation_success_rate_pct: number;
 }
 
-const generateCascadeEvents = (): CascadeEvent[] => {
-  const regions = ["Zone-A", "Zone-B", "Zone-C", "Zone-D", "Zone-E"];
-  const statuses = ["mitigating", "resolved", "escalating"];
-  
-  return Array.from({ length: 3 }, (_, i) => ({
-    id: i + 1,
-    primary_disruption_id: 100 + Math.floor(Math.random() * 50),
-    cascade_level: Math.floor(Math.random() * 3) + 1,
-    affected_trains: Math.floor(Math.random() * 12) + 2,
-    detection_time: new Date(Date.now() - Math.random() * 3600000).toISOString(),
-    mitigation_status: statuses[Math.floor(Math.random() * statuses.length)],
-    affected_regions: [regions[Math.floor(Math.random() * regions.length)], regions[Math.floor(Math.random() * regions.length)]],
-    confidence: 0.75 + Math.random() * 0.25,
-  }));
+interface Disruption {
+  id: number;
+  train_id: number;
+  severity: string;
+  status: string;
+  detected_at: string;
+  cascade_impact?: {
+    affected_trains?: number[];
+  };
+}
+
+interface TrainSummary {
+  id: number;
+  origin: string;
+  destination: string;
+}
+
+interface StationSummary {
+  code: string;
+  zone: string;
+}
+
+const REFRESH_INTERVAL = Math.max(10_000, Number(import.meta.env.VITE_CASCADE_REFRESH_MS ?? 20_000));
+
+const severityScore: Record<string, number> = {
+  critical: 1,
+  high: 0.8,
+  medium: 0.65,
+  low: 0.5,
 };
+
+function levelFromInputs(affectedTrains: number, severity: string) {
+  const severityBase = severity === "critical" ? 3 : severity === "high" ? 2 : 1;
+  if (affectedTrains >= 5) return 3;
+  if (affectedTrains >= 3) return Math.max(2, severityBase);
+  return Math.max(1, Math.min(3, severityBase));
+}
 
 export default function CascadeDisruptionPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<CascadeMetrics | null>(null);
   const [cascades, setCascades] = useState<CascadeEvent[]>([]);
+  const { toast } = useToast();
+
+  const load = useCallback(async () => {
+    const [disruptionsPayload, trainsPayload, stationsPayload] = await Promise.all([
+      backend.railmind.listDisruptions(),
+      backend.railmind.listTrains(),
+      backend.railmind.listStations(),
+    ]);
+
+    const disruptions = disruptionsPayload.disruptions as Disruption[];
+    const trains = trainsPayload.trains as TrainSummary[];
+    const stations = stationsPayload.stations as StationSummary[];
+
+    const trainById = new Map<number, TrainSummary>(trains.map((train) => [train.id, train]));
+    const zoneByStationCode = new Map<string, string>(stations.map((station) => [station.code, station.zone]));
+
+    const cascadeRows = disruptions.map((disruption) => {
+      const affectedTrainIds = disruption.cascade_impact?.affected_trains?.length
+        ? disruption.cascade_impact.affected_trains
+        : [disruption.train_id];
+
+      const zones = new Set<string>();
+      for (const trainId of affectedTrainIds) {
+        const train = trainById.get(trainId);
+        if (!train) continue;
+        const originZone = zoneByStationCode.get(train.origin);
+        const destinationZone = zoneByStationCode.get(train.destination);
+        if (originZone) zones.add(originZone);
+        if (destinationZone) zones.add(destinationZone);
+      }
+
+      const affectedTrains = affectedTrainIds.length;
+      const confidence = Math.min(0.99, 0.5 + (severityScore[disruption.severity] ?? 0.5) * 0.35 + Math.min(0.14, affectedTrains * 0.03));
+
+      return {
+        id: disruption.id,
+        primary_disruption_id: disruption.id,
+        cascade_level: levelFromInputs(affectedTrains, disruption.severity),
+        affected_trains: affectedTrains,
+        detection_time: disruption.detected_at,
+        mitigation_status: disruption.status === "resolved" ? "resolved" : disruption.severity === "critical" ? "escalating" : "mitigating",
+        affected_regions: zones.size ? [...zones] : ["Unknown"],
+        confidence,
+      } satisfies CascadeEvent;
+    });
+
+    const active = cascadeRows.filter((row) => row.mitigation_status !== "resolved");
+    const resolved = cascadeRows.filter((row) => row.mitigation_status === "resolved");
+
+    const avgDetectionTimeMinutes = active.length
+      ? Math.max(
+          1,
+          Math.round(
+            active.reduce((sum, row) => {
+              const detected = new Date(row.detection_time).getTime();
+              return sum + (Number.isFinite(detected) ? Math.max(1, (Date.now() - detected) / 60_000) : 1);
+            }, 0) / active.length
+          )
+        )
+      : 0;
+
+    const mitigationSuccess = cascadeRows.length ? Math.round((resolved.length / cascadeRows.length) * 100) : 0;
+
+    setMetrics({
+      active_cascades: active.length,
+      prevented_cascades: resolved.length,
+      avg_detection_time_minutes: avgDetectionTimeMinutes,
+      mitigation_success_rate_pct: mitigationSuccess,
+    });
+    setCascades(cascadeRows);
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setLoading(true);
-        setMetrics({
-          active_cascades: Math.floor(Math.random() * 5),
-          prevented_cascades: Math.floor(Math.random() * 30) + 10,
-          avg_detection_time_minutes: Math.floor(Math.random() * 6) + 2,
-          mitigation_success_rate_pct: Math.floor(Math.random() * 10) + 85,
-        });
-
-        setCascades(generateCascadeEvents());
+        await load();
       } catch (error) {
         console.error("Error fetching cascade data:", error);
+        toast({ title: "Failed to load cascade disruptions", variant: "destructive" });
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 20000);
+    void fetchData();
+    const interval = setInterval(() => void fetchData(), REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
+  }, [load, toast]);
 
   if (loading) return <LoadingSpinner />;
 
@@ -84,25 +172,25 @@ export default function CascadeDisruptionPage() {
             title="Active Cascades"
             value={metrics.active_cascades.toString()}
             icon={AlertTriangle}
-            trend={-3}
+            delta="-3%"
           />
           <KPICard
             title="Prevented Cascades"
             value={metrics.prevented_cascades.toString()}
             icon={TrendingDown}
-            trend={8}
+            delta="+8%"
           />
           <KPICard
             title="Avg Detection Time"
             value={`${metrics.avg_detection_time_minutes}min`}
             icon={Zap}
-            trend={-2}
+            delta="-2%"
           />
           <KPICard
             title="Mitigation Success Rate"
             value={`${metrics.mitigation_success_rate_pct}%`}
             icon={Network}
-            trend={5}
+            delta="+5%"
           />
         </div>
       )}

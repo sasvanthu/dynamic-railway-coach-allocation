@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { RefreshCw, Info } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { RefreshCw, Info, Clock } from "lucide-react";
 import backend from "~backend/client";
 import LoadingSpinner from "../components/LoadingSpinner";
 import { useToast } from "@/components/ui/use-toast";
@@ -43,11 +43,56 @@ function demandBg(score: number) {
   return "#1e3a8a";
 }
 
-const SLOTS = ["00:00", "06:00", "12:00", "18:00", "24:00", "30:00", "36:00", "42:00", "48:00", "54:00", "60:00", "66:00"];
+const SLOT_OFFSETS_HOURS = Array.from({ length: 12 }, (_, index) => index * 6);
 
-function seedRandom(seed: number) {
-  const x = Math.sin(seed) * 10000;
-  return x - Math.floor(x);
+type HeatmapBucket = {
+  scoreSum: number;
+  count: number;
+  factorSums: Record<string, number>;
+};
+
+function toFiniteNumber(value: unknown, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function normalizeFactors(forecast: Forecast) {
+  const raw = forecast.factors ?? {};
+  const eventImpact = toFiniteNumber(raw.event_boost ?? raw.event_impact);
+  const historicalAvg = toFiniteNumber(raw.historical ?? raw.historical_avg);
+  const weather = toFiniteNumber(raw.weather);
+  const sentiment = toFiniteNumber(raw.sentiment, 0.05);
+  const timeOfDay = toFiniteNumber(raw.time_of_day);
+
+  return {
+    demand_forecast: clamp01(forecast.demand_score * 0.45 + timeOfDay),
+    event_impact: clamp01(eventImpact),
+    historical_avg: clamp01(historicalAvg),
+    weather: clamp01(weather),
+    sentiment: clamp01(sentiment),
+  };
+}
+
+function averageFactors(factorSums: Record<string, number>, count: number): Record<string, number> {
+  if (!count) {
+    return {
+      demand_forecast: 0,
+      event_impact: 0,
+      historical_avg: 0,
+      weather: 0,
+      sentiment: 0,
+    };
+  }
+
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(factorSums)) {
+    result[key] = clamp01(value / count);
+  }
+  return result;
 }
 
 export default function ForecastsPage() {
@@ -56,9 +101,12 @@ export default function ForecastsPage() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [selectedCell, setSelectedCell] = useState<SelectedCell | null>(null);
+  const [lastRefreshTime, setLastRefreshTime] = useState<string | null>(null);
   const { toast } = useToast();
 
-  const load = async () => {
+  const REFRESH_INTERVAL = parseInt(import.meta.env.VITE_FORECASTS_REFRESH_MS || "30000");
+
+  const load = useCallback(async () => {
     try {
       const [f, e] = await Promise.all([
         backend.railmind.listForecasts({}),
@@ -66,15 +114,20 @@ export default function ForecastsPage() {
       ]);
       setForecasts(f.forecasts);
       setEvents(e.events);
+      setLastRefreshTime(new Date().toLocaleTimeString());
     } catch (err) {
       console.error(err);
       toast({ title: "Failed to load forecasts", variant: "destructive" });
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    void load();
+    const interval = setInterval(() => void load(), REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [load, REFRESH_INTERVAL]);
 
   const generate = async () => {
     setGenerating(true);
@@ -90,14 +143,72 @@ export default function ForecastsPage() {
     }
   };
 
-  const trainIds = [...new Set(forecasts.map((f) => f.train_id))].slice(0, 8);
-  const trainMap = new Map(forecasts.map((f) => [f.train_id, { number: f.train_number, name: f.train_name }]));
+  const slotLabels = SLOT_OFFSETS_HOURS.map((offset) => `T+${offset}h`);
 
-  const getScore = (trainId: number, slotIndex: number) => {
-    const seed = trainId * 100 + slotIndex;
-    const base = seedRandom(seed) * 0.6 + 0.2;
-    const eventBoost = events.length > 0 ? events[0].impact_score * 0.3 * seedRandom(seed + 7) : 0;
-    return Math.min(0.99, base + eventBoost);
+  const now = Date.now();
+  const bucketsByTrain = new Map<number, Map<number, HeatmapBucket>>();
+  const baselineByTrain = new Map<number, HeatmapBucket>();
+
+  for (const forecast of forecasts) {
+    const slotMap = bucketsByTrain.get(forecast.train_id) ?? new Map<number, HeatmapBucket>();
+    const baseline = baselineByTrain.get(forecast.train_id) ?? { scoreSum: 0, count: 0, factorSums: {} };
+    const factors = normalizeFactors(forecast);
+
+    baseline.scoreSum += forecast.demand_score;
+    baseline.count += 1;
+    for (const [key, value] of Object.entries(factors)) {
+      baseline.factorSums[key] = (baseline.factorSums[key] ?? 0) + value;
+    }
+    baselineByTrain.set(forecast.train_id, baseline);
+
+    const forecastTime = new Date(forecast.forecast_time).getTime();
+    const hoursFromNow = (forecastTime - now) / 3_600_000;
+    const slotIndex = Math.floor(hoursFromNow / 6);
+    if (slotIndex < 0 || slotIndex >= SLOT_OFFSETS_HOURS.length) {
+      bucketsByTrain.set(forecast.train_id, slotMap);
+      continue;
+    }
+
+    const bucket = slotMap.get(slotIndex) ?? { scoreSum: 0, count: 0, factorSums: {} };
+    bucket.scoreSum += forecast.demand_score;
+    bucket.count += 1;
+    for (const [key, value] of Object.entries(factors)) {
+      bucket.factorSums[key] = (bucket.factorSums[key] ?? 0) + value;
+    }
+    slotMap.set(slotIndex, bucket);
+    bucketsByTrain.set(forecast.train_id, slotMap);
+  }
+
+  const trainIds = [...new Set(forecasts.map((forecast) => forecast.train_id))].slice(0, 8);
+  const trainMap = new Map(forecasts.map((forecast) => [forecast.train_id, { number: forecast.train_number, name: forecast.train_name }]));
+
+  const getCellData = (trainId: number, slotIndex: number) => {
+    const slotBucket = bucketsByTrain.get(trainId)?.get(slotIndex);
+    if (slotBucket && slotBucket.count > 0) {
+      return {
+        score: clamp01(slotBucket.scoreSum / slotBucket.count),
+        factors: averageFactors(slotBucket.factorSums, slotBucket.count),
+      };
+    }
+
+    const baseline = baselineByTrain.get(trainId);
+    if (baseline && baseline.count > 0) {
+      return {
+        score: clamp01(baseline.scoreSum / baseline.count),
+        factors: averageFactors(baseline.factorSums, baseline.count),
+      };
+    }
+
+    return {
+      score: 0,
+      factors: {
+        demand_forecast: 0,
+        event_impact: 0,
+        historical_avg: 0,
+        weather: 0,
+        sentiment: 0,
+      },
+    };
   };
 
   if (loading) return <LoadingSpinner />;
@@ -116,6 +227,11 @@ export default function ForecastsPage() {
         <div>
           <h2 className="text-2xl font-bold text-zinc-100">Demand Forecasting</h2>
           <p className="text-sm text-zinc-500 mt-0.5">72-hour ML-powered demand heatmap with event overlays</p>
+          {lastRefreshTime && (
+            <p className="text-xs text-zinc-600 mt-2 flex items-center gap-1">
+              <Clock className="w-3 h-3" /> Last updated: {lastRefreshTime}
+            </p>
+          )}
         </div>
         <button
           onClick={generate}
@@ -154,9 +270,9 @@ export default function ForecastsPage() {
             <thead>
               <tr>
                 <th className="text-left text-zinc-500 pb-2 pr-3 font-medium w-28">Train</th>
-                {SLOTS.map((slot, i) => (
+                {slotLabels.map((slot, i) => (
                   <th key={i} className="text-center text-zinc-500 pb-2 px-0.5 font-medium w-16">
-                    <div>+{slot}</div>
+                    <div>{slot}</div>
                     {events.length > i && i < 3 && <div title={events[i]?.name}>{eventTypeIcon[events[i]?.type] ?? ""}</div>}
                   </th>
                 ))}
@@ -171,14 +287,15 @@ export default function ForecastsPage() {
                       <div className="text-zinc-300 font-mono font-semibold">{info?.number}</div>
                       <div className="text-zinc-600 truncate max-w-24">{info?.name}</div>
                     </td>
-                    {SLOTS.map((slot, si) => {
-                      const score = getScore(trainId, si);
+                    {slotLabels.map((slot, si) => {
+                      const cell = getCellData(trainId, si);
+                      const score = cell.score;
                       return (
                         <td key={si} className="px-0.5 py-0.5">
                           <div
                             className="w-full h-9 rounded cursor-pointer hover:opacity-80 hover:ring-1 hover:ring-white/20 flex items-center justify-center text-white font-bold transition-all"
                             style={{ background: demandBg(score) }}
-                            onClick={() => setSelectedCell({ trainName: info?.name ?? `Train ${trainId}`, slot, score, factors: { demand_forecast: score * 0.4, event_impact: score * 0.3, historical_avg: score * 0.2, weather: score * 0.06, sentiment: score * 0.04 } })}
+                            onClick={() => setSelectedCell({ trainName: info?.name ?? `Train ${trainId}`, slot, score, factors: cell.factors })}
                           >
                             {Math.round(score * 100)}
                           </div>

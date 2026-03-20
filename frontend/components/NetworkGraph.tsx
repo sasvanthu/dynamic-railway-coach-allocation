@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import * as d3 from "d3";
+import { useEffect, useMemo } from "react";
+import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, Tooltip, useMap } from "react-leaflet";
 
 interface NetworkNode {
   id: number;
@@ -40,106 +40,119 @@ const zoneColor: Record<string, string> = {
   Central: "#ec4899",
 };
 
-export default function NetworkGraph({ nodes, edges, width = 600, height = 400 }: NetworkGraphProps) {
-  const svgRef = useRef<SVGSVGElement>(null);
+function FitBounds({ points }: { points: Array<[number, number]> }) {
+  const map = useMap();
 
   useEffect(() => {
-    if (!svgRef.current || nodes.length === 0) return;
+    if (points.length === 0) return;
+    map.fitBounds(points, { padding: [24, 24], maxZoom: 7 });
+  }, [map, points]);
 
-    d3.select(svgRef.current).selectAll("*").remove();
+  return null;
+}
 
-    const svg = d3.select(svgRef.current)
-      .attr("width", width)
-      .attr("height", height);
+export default function NetworkGraph({ nodes, edges, height = 400 }: NetworkGraphProps) {
+  const mapHeight = typeof height === "number" ? `${height}px` : height;
 
-    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const center = useMemo<[number, number]>(() => {
+    if (!nodes.length) return [22.5, 79.0];
+    const lat = nodes.reduce((sum, node) => sum + node.lat, 0) / nodes.length;
+    const lng = nodes.reduce((sum, node) => sum + node.lng, 0) / nodes.length;
+    return [lat, lng];
+  }, [nodes]);
 
-    const linkData = edges
-      .map((e) => ({ ...e, source: e.source, target: e.target }))
-      .filter((e) => nodeMap.has(e.source) && nodeMap.has(e.target));
+  const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
-    const simulation = d3.forceSimulation(nodes as d3.SimulationNodeDatum[])
-      .force("link", d3.forceLink(linkData).id((d: d3.SimulationNodeDatum) => (d as NetworkNode).id).distance(120))
-      .force("charge", d3.forceManyBody().strength(-300))
-      .force("center", d3.forceCenter(width / 2, height / 2))
-      .force("collision", d3.forceCollide(35));
+  const routeLines = useMemo(
+    () =>
+      edges
+        .map((edge, index) => {
+          const source = nodeMap.get(edge.source);
+          const target = nodeMap.get(edge.target);
+          if (!source || !target) return null;
 
-    svg.append("defs").append("marker")
-      .attr("id", "arrowhead")
-      .attr("viewBox", "-0 -5 10 10")
-      .attr("refX", 20)
-      .attr("refY", 0)
-      .attr("orient", "auto")
-      .attr("markerWidth", 6)
-      .attr("markerHeight", 6)
-      .append("path")
-      .attr("d", "M 0,-5 L 10,0 L 0,5")
-      .attr("fill", "#6b7280");
+          return {
+            id: `${edge.source}-${edge.target}-${index}`,
+            edge,
+            source,
+            target,
+            positions: [
+              [source.lat, source.lng] as [number, number],
+              [target.lat, target.lng] as [number, number],
+            ],
+          };
+        })
+        .filter((entry): entry is { id: string; edge: NetworkEdge; source: NetworkNode; target: NetworkNode; positions: [number, number][] } => Boolean(entry)),
+    [edges, nodeMap]
+  );
 
-    const link = svg.append("g")
-      .selectAll("line")
-      .data(linkData)
-      .join("line")
-      .attr("stroke", (d) => demandColor[d.demand_level] ?? "#6b7280")
-      .attr("stroke-width", 2)
-      .attr("stroke-opacity", 0.6)
-      .attr("marker-end", "url(#arrowhead)");
+  if (!nodes.length) {
+    return (
+      <div className="w-full rounded-lg border border-zinc-800 bg-zinc-950/40 flex items-center justify-center text-sm text-zinc-500" style={{ height: mapHeight }}>
+        Network map unavailable
+      </div>
+    );
+  }
 
-    const node = svg.append("g")
-      .selectAll("g")
-      .data(nodes)
-      .join("g")
-      .call(
-        d3.drag<SVGGElement, NetworkNode>()
-          .on("start", (event, d) => {
-            if (!event.active) simulation.alphaTarget(0.3).restart();
-            (d as d3.SimulationNodeDatum).fx = (d as d3.SimulationNodeDatum).x;
-            (d as d3.SimulationNodeDatum).fy = (d as d3.SimulationNodeDatum).y;
-          })
-          .on("drag", (event, d) => {
-            (d as d3.SimulationNodeDatum).fx = event.x;
-            (d as d3.SimulationNodeDatum).fy = event.y;
-          })
-          .on("end", (event, d) => {
-            if (!event.active) simulation.alphaTarget(0);
-            (d as d3.SimulationNodeDatum).fx = null;
-            (d as d3.SimulationNodeDatum).fy = null;
-          }) as never
-      );
+  const fitPoints: Array<[number, number]> = nodes.map((node) => [node.lat, node.lng]);
 
-    node.append("circle")
-      .attr("r", (d) => 12 + d.crowd_density * 14)
-      .attr("fill", (d) => zoneColor[d.zone] ?? "#6b7280")
-      .attr("fill-opacity", 0.25)
-      .attr("stroke", (d) => zoneColor[d.zone] ?? "#6b7280")
-      .attr("stroke-width", 2);
+  return (
+    <div className="w-full rounded-lg border border-zinc-800 overflow-hidden" style={{ height: mapHeight }}>
+      <MapContainer center={center} zoom={5} scrollWheelZoom className="h-full w-full" zoomControl>
+        <TileLayer
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO'
+        />
+        <FitBounds points={fitPoints} />
 
-    node.append("circle")
-      .attr("r", 6)
-      .attr("fill", (d) => zoneColor[d.zone] ?? "#6b7280");
+        {routeLines.map((line) => (
+          <Polyline
+            key={line.id}
+            positions={line.positions}
+            pathOptions={{
+              color: demandColor[line.edge.demand_level] ?? "#6b7280",
+              weight: 3,
+              opacity: 0.85,
+            }}
+          >
+            <Tooltip sticky>
+              <div className="text-xs">
+                <div className="font-semibold">{line.edge.route_name}</div>
+                <div>{Math.round(line.edge.distance_km)} km</div>
+                <div className="capitalize">{line.edge.demand_level} demand corridor</div>
+              </div>
+            </Tooltip>
+          </Polyline>
+        ))}
 
-    node.append("text")
-      .attr("dy", -20)
-      .attr("text-anchor", "middle")
-      .attr("fill", "#e4e4e7")
-      .attr("font-size", "11px")
-      .attr("font-weight", "600")
-      .text((d) => d.code);
+        {nodes.map((node) => {
+          const color = zoneColor[node.zone] ?? "#6b7280";
+          const radius = 6 + node.crowd_density * 8;
 
-    node.append("title").text((d) => `${d.name}\nZone: ${d.zone}\nCrowd: ${Math.round(d.crowd_density * 100)}%`);
-
-    simulation.on("tick", () => {
-      link
-        .attr("x1", (d) => (d.source as d3.SimulationNodeDatum).x ?? 0)
-        .attr("y1", (d) => (d.source as d3.SimulationNodeDatum).y ?? 0)
-        .attr("x2", (d) => (d.target as d3.SimulationNodeDatum).x ?? 0)
-        .attr("y2", (d) => (d.target as d3.SimulationNodeDatum).y ?? 0);
-
-      node.attr("transform", (d) => `translate(${(d as d3.SimulationNodeDatum).x ?? 0},${(d as d3.SimulationNodeDatum).y ?? 0})`);
-    });
-
-    return () => { simulation.stop(); };
-  }, [nodes, edges, width, height]);
-
-  return <svg ref={svgRef} className="w-full" style={{ height }} />;
+          return (
+            <CircleMarker
+              key={node.id}
+              center={[node.lat, node.lng]}
+              radius={radius}
+              pathOptions={{
+                color,
+                fillColor: color,
+                fillOpacity: 0.45,
+                weight: 2,
+              }}
+            >
+              <Tooltip direction="top">{node.code}</Tooltip>
+              <Popup>
+                <div className="text-sm">
+                  <p className="font-semibold">{node.name}</p>
+                  <p className="text-xs text-zinc-600">Zone: {node.zone}</p>
+                  <p className="text-xs text-zinc-600">Crowd density: {Math.round(node.crowd_density * 100)}%</p>
+                </div>
+              </Popup>
+            </CircleMarker>
+          );
+        })}
+      </MapContainer>
+    </div>
+  );
 }

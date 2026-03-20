@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Globe, Share2, TrendingUp, Zap } from "lucide-react";
 import KPICard from "../components/KPICard";
 import LoadingSpinner from "../components/LoadingSpinner";
+import backend from "~backend/client";
+import { useToast } from "@/components/ui/use-toast";
 
 interface RakeSharingTransaction {
   id: number;
@@ -20,55 +22,89 @@ interface RakeSharingMetrics {
   efficiency_score: number;
 }
 
-const generateRakeTransactions = (): RakeSharingTransaction[] => {
-  const zones = ["North", "South", "East", "West", "Central"];
-  const statuses = ["completed", "in_transit", "pending"];
-  
-  return Array.from({ length: 5 }, (_, i) => {
-    const fromZone = zones[Math.floor(Math.random() * zones.length)];
-    let toZone = zones[Math.floor(Math.random() * zones.length)];
-    while (toZone === fromZone) toZone = zones[Math.floor(Math.random() * zones.length)];
-    
-    return {
-      id: i + 1,
-      from_zone: fromZone,
-      to_zone: toZone,
-      rake_count: Math.floor(Math.random() * 8) + 1,
-      timestamp: new Date(Date.now() - Math.random() * 3600000).toISOString(),
-      savings_percentage: Math.floor(Math.random() * 15) + 10,
-      status: statuses[Math.floor(Math.random() * statuses.length)],
-    };
-  });
-};
+interface RakeTransfer {
+  id: number;
+  from_zone: string;
+  to_zone: string;
+  coach_ids: number[];
+  scheduled_at: string;
+  status: string;
+  estimated_savings_km: number;
+}
+
+const REFRESH_INTERVAL = Math.max(10_000, Number(import.meta.env.VITE_RAKE_SHARING_REFRESH_MS ?? 18_000));
+
+function deriveSavingsPercent(estimatedSavingsKm: number) {
+  return Math.max(8, Math.min(35, Math.round(estimatedSavingsKm / 45)));
+}
+
+function mapStatus(value: string) {
+  if (value === "approved") return "in_transit";
+  if (value === "proposed") return "pending";
+  return "completed";
+}
 
 export default function RakeSharingNetworkPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<RakeSharingMetrics | null>(null);
   const [transactions, setTransactions] = useState<RakeSharingTransaction[]>([]);
+  const { toast } = useToast();
+
+  const load = useCallback(async () => {
+    const payload = await backend.railmind.listRakeTransfers();
+    const transfers = payload.rake_transfers as RakeTransfer[];
+
+    const mappedTransactions = transfers.map((transfer) => ({
+      id: transfer.id,
+      from_zone: transfer.from_zone,
+      to_zone: transfer.to_zone,
+      rake_count: Array.isArray(transfer.coach_ids) ? transfer.coach_ids.length : 0,
+      timestamp: transfer.scheduled_at,
+      savings_percentage: deriveSavingsPercent(Number(transfer.estimated_savings_km) || 0),
+      status: mapStatus(transfer.status),
+    }));
+
+    const allZones = new Set<string>();
+    mappedTransactions.forEach((transaction) => {
+      allZones.add(transaction.from_zone);
+      allZones.add(transaction.to_zone);
+    });
+
+    const avgSavings = mappedTransactions.length
+      ? Math.round(mappedTransactions.reduce((sum, transaction) => sum + transaction.savings_percentage, 0) / mappedTransactions.length)
+      : 0;
+
+    const completedOrTransit = mappedTransactions.filter((transaction) => transaction.status !== "pending").length;
+    const executionRate = mappedTransactions.length ? completedOrTransit / mappedTransactions.length : 0;
+
+    setMetrics({
+      total_shared_rakes: mappedTransactions.reduce((sum, transaction) => sum + transaction.rake_count, 0),
+      active_zones: allZones.size,
+      cost_savings_percent: avgSavings,
+      efficiency_score: Math.round(Math.min(99, 70 + executionRate * 20 + avgSavings * 0.25)),
+    });
+
+    setTransactions(
+      mappedTransactions.sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+    );
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setLoading(true);
-        setMetrics({
-          total_shared_rakes: Math.floor(Math.random() * 250) + 100,
-          active_zones: Math.floor(Math.random() * 4) + 5,
-          cost_savings_percent: Math.floor(Math.random() * 15) + 15,
-          efficiency_score: Math.floor(Math.random() * 15) + 80,
-        });
-
-        setTransactions(generateRakeTransactions());
+        await load();
       } catch (error) {
         console.error("Error fetching rake sharing data:", error);
+        toast({ title: "Failed to load rake sharing network", variant: "destructive" });
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 18000);
+    void fetchData();
+    const interval = setInterval(() => void fetchData(), REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
+  }, [load, toast]);
 
   if (loading) return <LoadingSpinner />;
 
@@ -88,25 +124,25 @@ export default function RakeSharingNetworkPage() {
             title="Total Shared Rakes"
             value={metrics.total_shared_rakes.toString()}
             icon={Share2}
-            trend={12}
+            delta="+12%"
           />
           <KPICard
             title="Active Zones"
             value={metrics.active_zones.toString()}
             icon={Globe}
-            trend={2}
+            delta="+2%"
           />
           <KPICard
             title="Cost Savings"
             value={`${metrics.cost_savings_percent}%`}
             icon={TrendingUp}
-            trend={8}
+            delta="+8%"
           />
           <KPICard
             title="Efficiency Score"
             value={metrics.efficiency_score.toString()}
             icon={Zap}
-            trend={5}
+            delta="+5%"
           />
         </div>
       )}

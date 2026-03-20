@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { CheckCircle, PlusCircle } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { CheckCircle, PlusCircle, Clock } from "lucide-react";
 import backend from "~backend/client";
 import LoadingSpinner from "../components/LoadingSpinner";
 import SeverityBadge from "../components/SeverityBadge";
@@ -39,9 +39,12 @@ export default function DisruptionsPage() {
   const [resolving, setResolving] = useState<number | null>(null);
   const [injectForm, setInjectForm] = useState({ trainId: "", type: "delay", severity: "medium" });
   const [injecting, setInjecting] = useState(false);
+  const [lastRefreshTime, setLastRefreshTime] = useState<string | null>(null);
   const { toast } = useToast();
 
-  const load = async () => {
+  const REFRESH_INTERVAL = parseInt(import.meta.env.VITE_DISRUPTIONS_REFRESH_MS || "10000");
+
+  const load = useCallback(async () => {
     try {
       const [d, t] = await Promise.all([
         backend.railmind.listDisruptions(),
@@ -49,15 +52,20 @@ export default function DisruptionsPage() {
       ]);
       setDisruptions(d.disruptions as unknown as Disruption[]);
       setTrains(t.trains.map((tr) => ({ id: tr.id, train_number: tr.train_number, name: tr.name })));
+      setLastRefreshTime(new Date().toLocaleTimeString());
     } catch (err) {
       console.error(err);
       toast({ title: "Failed to load disruptions", variant: "destructive" });
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    void load();
+    const interval = setInterval(() => void load(), REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [load, REFRESH_INTERVAL]);
 
   const resolve = async (id: number) => {
     setResolving(id);
@@ -100,6 +108,11 @@ export default function DisruptionsPage() {
         <div>
           <h2 className="text-2xl font-bold text-zinc-100">Disruption Management</h2>
           <p className="text-sm text-zinc-500 mt-0.5">Real-time incident tracking and AI-powered resolution</p>
+          {lastRefreshTime && (
+            <p className="text-xs text-zinc-600 mt-2 flex items-center gap-1">
+              <Clock className="w-3 h-3" /> Last updated: {lastRefreshTime}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2 text-sm">
           <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />

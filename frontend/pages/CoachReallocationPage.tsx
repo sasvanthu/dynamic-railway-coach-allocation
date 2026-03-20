@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Clock, Zap, TrendingUp, AlertCircle } from "lucide-react";
 import KPICard from "../components/KPICard";
 import LoadingSpinner from "../components/LoadingSpinner";
 import backend from "~backend/client";
+import { useToast } from "@/components/ui/use-toast";
 
 interface ReallocationEvent {
   id: number;
@@ -23,51 +24,154 @@ interface ReallocationMetrics {
   capacity_optimization_pct: number;
 }
 
-const generateReallocationEvents = (): ReallocationEvent[] => {
-  const reasons = ["Demand surge detected", "Capacity optimization", "Proactive reallocation", "Load balancing"];
-  const statuses = ["completed", "in_progress"];
-  
-  return Array.from({ length: 5 }, (_, i) => ({
-    id: i + 1,
-    timestamp: new Date(Date.now() - Math.random() * 3600000).toISOString(),
-    coach_id: `C-${12345 + i}`,
-    from_train: `${12051 + Math.floor(Math.random() * 10)}`,
-    to_train: `${12051 + Math.floor(Math.random() * 10)}`,
-    reason: reasons[Math.floor(Math.random() * reasons.length)],
-    impact_score: 0.75 + Math.random() * 0.25,
-    status: statuses[Math.floor(Math.random() * statuses.length)],
-  }));
+interface Allocation {
+  id: number;
+  train_id: number;
+  coach_id: number;
+  coach_number: string | null;
+  train_number: string | null;
+  allocated_at: string;
+  allocated_reason: string;
+}
+
+interface TrainSummary {
+  id: number;
+  train_number: string;
+}
+
+interface CoachSummary {
+  id: number;
+  status: string;
+}
+
+interface Disruption {
+  id: number;
+  severity: string;
+  status: string;
+  detected_at: string;
+  auto_suggestions: Array<{
+    from_train: number;
+    to_train: number;
+    coaches: number;
+    rationale: string;
+  }>;
+}
+
+const severityWeight: Record<string, number> = {
+  critical: 0.9,
+  high: 0.8,
+  medium: 0.65,
+  low: 0.5,
 };
+
+const REFRESH_INTERVAL = Math.max(10_000, Number(import.meta.env.VITE_COACH_REALLOCATION_REFRESH_MS ?? 15_000));
+
+function isSameDay(value: string, day: Date) {
+  const date = new Date(value);
+  return (
+    date.getFullYear() === day.getFullYear() &&
+    date.getMonth() === day.getMonth() &&
+    date.getDate() === day.getDate()
+  );
+}
 
 export default function CoachReallocationPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<ReallocationMetrics | null>(null);
   const [events, setEvents] = useState<ReallocationEvent[]>([]);
+  const { toast } = useToast();
+
+  const load = useCallback(async () => {
+    const [allocationsPayload, trainsPayload, disruptionsPayload, coachesPayload] = await Promise.all([
+      backend.railmind.listAllocations({}),
+      backend.railmind.listTrains(),
+      backend.railmind.listDisruptions(),
+      backend.railmind.listCoaches({}),
+    ]);
+
+    const allocations = allocationsPayload.allocations as Allocation[];
+    const trains = trainsPayload.trains as TrainSummary[];
+    const disruptions = disruptionsPayload.disruptions as Disruption[];
+    const coaches = coachesPayload.coaches as CoachSummary[];
+
+    const trainNumberById = new Map<number, string>(trains.map((train) => [train.id, train.train_number]));
+
+    const disruptionEvents = disruptions.flatMap((disruption) => {
+      const suggestions = Array.isArray(disruption.auto_suggestions) ? disruption.auto_suggestions : [];
+      return suggestions.map((suggestion, index) => {
+        const baseImpact = severityWeight[disruption.severity] ?? 0.6;
+        return {
+          id: disruption.id * 100 + index,
+          timestamp: disruption.detected_at,
+          coach_id: `${suggestion.coaches} coach${suggestion.coaches > 1 ? "es" : ""}`,
+          from_train: trainNumberById.get(suggestion.from_train) ?? `Train ${suggestion.from_train}`,
+          to_train: trainNumberById.get(suggestion.to_train) ?? `Train ${suggestion.to_train}`,
+          reason: suggestion.rationale,
+          impact_score: Math.min(0.99, baseImpact + Math.min(0.15, suggestion.coaches * 0.03)),
+          status: disruption.status === "active" ? "in_progress" : "completed",
+        } satisfies ReallocationEvent;
+      });
+    });
+
+    const allocationFallback = allocations.slice(0, 8).map((allocation, index) => ({
+      id: allocation.id + index,
+      timestamp: allocation.allocated_at,
+      coach_id: allocation.coach_number ?? `Coach ${allocation.coach_id}`,
+      from_train: "Reserve Pool",
+      to_train: allocation.train_number ?? `Train ${allocation.train_id}`,
+      reason: allocation.allocated_reason,
+      impact_score: 0.6,
+      status: "completed",
+    }));
+
+    const finalEvents = (disruptionEvents.length ? disruptionEvents : allocationFallback)
+      .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+      .slice(0, 12);
+
+    const now = new Date();
+    const reallocationsToday = allocations.filter((allocation) => isSameDay(allocation.allocated_at, now)).length;
+    const reallocationsInProgress = finalEvents.filter((event) => event.status === "in_progress").length;
+
+    const avgReallocationTime = finalEvents.length
+      ? Math.round(
+          finalEvents.reduce((sum, event) => {
+            const eventTime = new Date(event.timestamp).getTime();
+            const ageMinutes = Number.isFinite(eventTime) ? Math.max(1, Math.round((Date.now() - eventTime) / 60_000)) : 1;
+            return sum + ageMinutes;
+          }, 0) / finalEvents.length
+        )
+      : 0;
+
+    const coachesOptimized = new Set(allocations.map((allocation) => allocation.coach_id)).size;
+    const inUseCoaches = coaches.filter((coach) => coach.status === "in_use").length;
+    const capacityOptimizationPct = coaches.length ? Math.round((inUseCoaches / coaches.length) * 100) : 0;
+
+    setMetrics({
+      reallocations_today: reallocationsToday,
+      reallocations_in_progress: reallocationsInProgress,
+      avg_reallocation_time_minutes: avgReallocationTime,
+      coaches_optimized: coachesOptimized,
+      capacity_optimization_pct: capacityOptimizationPct,
+    });
+    setEvents(finalEvents);
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setLoading(true);
-        setMetrics({
-          reallocations_today: Math.floor(Math.random() * 50) + 20,
-          reallocations_in_progress: Math.floor(Math.random() * 8) + 1,
-          avg_reallocation_time_minutes: Math.floor(Math.random() * 15) + 8,
-          coaches_optimized: Math.floor(Math.random() * 200) + 100,
-          capacity_optimization_pct: Math.floor(Math.random() * 10) + 85,
-        });
-        
-        setEvents(generateReallocationEvents());
+        await load();
       } catch (error) {
         console.error("Error fetching reallocation data:", error);
+        toast({ title: "Failed to load coach reallocation feed", variant: "destructive" });
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 15000);
+    void fetchData();
+    const interval = setInterval(() => void fetchData(), REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
+  }, [load, toast]);
 
   if (loading) return <LoadingSpinner />;
 
@@ -87,31 +191,31 @@ export default function CoachReallocationPage() {
             title="Reallocations Today"
             value={metrics.reallocations_today.toString()}
             icon={Zap}
-            trend={12}
+            delta="+12%"
           />
           <KPICard
             title="In Progress"
             value={metrics.reallocations_in_progress.toString()}
             icon={TrendingUp}
-            trend={0}
+            delta="0%"
           />
           <KPICard
             title="Avg Time"
             value={`${metrics.avg_reallocation_time_minutes}min`}
             icon={Clock}
-            trend={-5}
+            delta="-5%"
           />
           <KPICard
             title="Coaches Optimized"
             value={metrics.coaches_optimized.toString()}
             icon={AlertCircle}
-            trend={8}
+            delta="+8%"
           />
           <KPICard
             title="Capacity Optimization"
             value={`${metrics.capacity_optimization_pct}%`}
             icon={TrendingUp}
-            trend={3}
+            delta="+3%"
           />
         </div>
       )}

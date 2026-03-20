@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { RefreshCw, Radio } from "lucide-react";
 import backend from "~backend/client";
 import LoadingSpinner from "../components/LoadingSpinner";
@@ -42,8 +42,9 @@ export default function SentimentPage() {
   const [loading, setLoading] = useState(true);
   const [simulating, setSimulating] = useState(false);
   const { toast } = useToast();
+  const REFRESH_INTERVAL = Math.max(10_000, Number(import.meta.env.VITE_SENTIMENT_REFRESH_MS ?? 15_000));
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const r = await backend.railmind.listSentiment();
       setRecords(r.sentiment);
@@ -53,16 +54,20 @@ export default function SentimentPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    void load();
+    const interval = setInterval(() => void load(), REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [load, REFRESH_INTERVAL]);
 
   const simulate = async () => {
     setSimulating(true);
     try {
       await backend.railmind.simulateSentiment();
       toast({ title: "New readings simulated", description: "CCTV, social, and kiosk data updated" });
-      load();
+      await load();
     } catch (err) {
       console.error(err);
       toast({ title: "Simulation failed", variant: "destructive" });

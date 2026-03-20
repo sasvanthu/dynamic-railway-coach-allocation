@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Brain, BarChart3, Lightbulb, TrendingUp } from "lucide-react";
 import KPICard from "../components/KPICard";
 import LoadingSpinner from "../components/LoadingSpinner";
+import backend from "~backend/client";
+import { useToast } from "@/components/ui/use-toast";
 
 interface Decision {
   id: number;
@@ -20,59 +22,130 @@ interface ExplainabilityMetrics {
   model_interpretability_score: number;
 }
 
-const generateDecisions = (): Decision[] => {
-  const types = ["Coach Reallocation", "Disruption Prediction", "Rake Sharing", "Demand Forecast", "Capacity Planning"];
-  const impacts = [
-    "18% capacity improvement",
-    "Prevent 7-train cascade",
-    "23% cost reduction",
-    "52 more passengers accommodated",
-    "31% utilization increase",
-  ];
-  
-  return Array.from({ length: 4 }, (_, i) => ({
-    id: i + 1,
-    decision_type: types[Math.floor(Math.random() * types.length)],
-    recommendation: `Recommendation ${i + 1}: ${Math.random() > 0.5 ? "Increase" : "Decrease"} allocation by ${Math.floor(Math.random() * 30) + 5} units`,
-    confidence: 0.80 + Math.random() * 0.20,
-    key_factors: [
-      `Primary factor (${Math.floor(Math.random() * 10) + 80}%)`,
-      `Secondary factor (${Math.floor(Math.random() * 10) + 75}%)`,
-      `Tertiary factor (${Math.floor(Math.random() * 10) + 70}%)`,
-    ],
-    impact_estimate: impacts[Math.floor(Math.random() * impacts.length)],
-    timestamp: new Date(Date.now() - Math.random() * 3600000).toISOString(),
-  }));
+interface Allocation {
+  id: number;
+  train_id: number;
+  train_number: string | null;
+  coach_number: string | null;
+  allocated_reason: string;
+  allocated_at: string;
+  shap_factors: Record<string, number>;
+}
+
+interface Forecast {
+  train_id: number;
+  confidence: number;
+  demand_score: number;
+}
+
+const REFRESH_INTERVAL = Math.max(10_000, Number(import.meta.env.VITE_AI_EXPLAINABILITY_REFRESH_MS ?? 20_000));
+
+const factorLabel: Record<string, string> = {
+  demand_forecast: "Demand forecast",
+  event_impact: "Event impact",
+  historical_avg: "Historical average",
+  weather: "Weather",
+  sentiment: "Passenger sentiment",
 };
+
+function formatFactor(name: string, value: number) {
+  const label = factorLabel[name] ?? name.replaceAll("_", " ");
+  return `${label} (${Math.round(value * 100)}%)`;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
 
 export default function AIExplainabilityPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<ExplainabilityMetrics | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
+  const { toast } = useToast();
+
+  const load = useCallback(async () => {
+    const [allocationsPayload, forecastsPayload] = await Promise.all([
+      backend.railmind.listAllocations({}),
+      backend.railmind.listForecasts({}),
+    ]);
+
+    const allocations = allocationsPayload.allocations as Allocation[];
+    const forecasts = forecastsPayload.forecasts as Forecast[];
+
+    const forecastByTrain = new Map<number, Forecast[]>();
+    for (const forecast of forecasts) {
+      if (!forecastByTrain.has(forecast.train_id)) {
+        forecastByTrain.set(forecast.train_id, []);
+      }
+      forecastByTrain.get(forecast.train_id)!.push(forecast);
+    }
+
+    const derivedDecisions = allocations.slice(0, 10).map((allocation) => {
+      const factors = Object.entries(allocation.shap_factors ?? {}).sort((left, right) => right[1] - left[1]);
+      const topFactors = factors.slice(0, 3);
+      const primaryWeight = topFactors[0]?.[1] ?? 0.5;
+
+      const trainForecasts = forecastByTrain.get(allocation.train_id) ?? [];
+      const avgConfidence = trainForecasts.length
+        ? trainForecasts.reduce((sum, forecast) => sum + Number(forecast.confidence || 0), 0) / trainForecasts.length
+        : 0.75;
+      const avgDemand = trainForecasts.length
+        ? trainForecasts.reduce((sum, forecast) => sum + Number(forecast.demand_score || 0), 0) / trainForecasts.length
+        : 0.6;
+
+      const confidence = clamp(primaryWeight * 0.55 + avgConfidence * 0.45, 0.55, 0.99);
+      const impactEstimate = `${Math.round(avgDemand * 100)}% predicted demand pressure on train ${allocation.train_number ?? allocation.train_id}`;
+
+      return {
+        id: allocation.id,
+        decision_type: "Coach Allocation Decision",
+        recommendation: `${allocation.coach_number ?? "Coach"} assigned to train ${allocation.train_number ?? allocation.train_id} due to ${allocation.allocated_reason.toLowerCase()}.`,
+        confidence,
+        key_factors: topFactors.map(([name, value]) => formatFactor(name, Number(value))),
+        impact_estimate: impactEstimate,
+        timestamp: allocation.allocated_at,
+      } satisfies Decision;
+    });
+
+    const avgForecastConfidence = forecasts.length
+      ? forecasts.reduce((sum, forecast) => sum + Number(forecast.confidence || 0), 0) / forecasts.length
+      : 0.82;
+    const avgDecisionConfidence = derivedDecisions.length
+      ? derivedDecisions.reduce((sum, decision) => sum + decision.confidence, 0) / derivedDecisions.length
+      : 0.8;
+
+    const explainableFactorCount = allocations.reduce((sum, allocation) => {
+      return sum + Object.values(allocation.shap_factors ?? {}).filter((value) => Number(value) > 0).length;
+    }, 0);
+    const maxFactorCount = Math.max(1, allocations.length * 5);
+
+    setMetrics({
+      model_accuracy_pct: Math.round(avgForecastConfidence * 100),
+      avg_confidence: avgDecisionConfidence,
+      decisions_explained: derivedDecisions.length,
+      model_interpretability_score: Math.round((explainableFactorCount / maxFactorCount) * 100),
+    });
+    setDecisions(
+      derivedDecisions.sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+    );
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setLoading(true);
-        setMetrics({
-          model_accuracy_pct: Math.floor(Math.random() * 8) + 90,
-          avg_confidence: 0.82 + Math.random() * 0.15,
-          decisions_explained: Math.floor(Math.random() * 1000) + 1500,
-          model_interpretability_score: Math.floor(Math.random() * 8) + 88,
-        });
-
-        setDecisions(generateDecisions());
+        await load();
       } catch (error) {
         console.error("Error fetching AI explainability data:", error);
+        toast({ title: "Failed to load explainability feed", variant: "destructive" });
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 20000);
+    void fetchData();
+    const interval = setInterval(() => void fetchData(), REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
+  }, [load, toast]);
 
   if (loading) return <LoadingSpinner />;
 
@@ -92,25 +165,25 @@ export default function AIExplainabilityPage() {
             title="Model Accuracy"
             value={`${metrics.model_accuracy_pct}%`}
             icon={BarChart3}
-            trend={3}
+            delta="+3%"
           />
           <KPICard
             title="Avg Confidence"
             value={`${(metrics.avg_confidence * 100).toFixed(0)}%`}
             icon={Brain}
-            trend={2}
+            delta="+2%"
           />
           <KPICard
             title="Decisions Explained"
             value={metrics.decisions_explained.toString()}
             icon={Lightbulb}
-            trend={15}
+            delta="+15%"
           />
           <KPICard
             title="Interpretability Score"
             value={metrics.model_interpretability_score.toString()}
             icon={TrendingUp}
-            trend={5}
+            delta="+5%"
           />
         </div>
       )}

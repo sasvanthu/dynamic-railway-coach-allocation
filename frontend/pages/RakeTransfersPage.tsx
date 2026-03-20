@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { CheckCircle, Zap, ArrowRight } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { CheckCircle, Zap, ArrowRight, Clock } from "lucide-react";
 import backend from "~backend/client";
 import LoadingSpinner from "../components/LoadingSpinner";
 import SeverityBadge from "../components/SeverityBadge";
@@ -38,21 +38,29 @@ export default function RakeTransfersPage() {
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState<number | null>(null);
   const [optimizing, setOptimizing] = useState(false);
+  const [lastRefreshTime, setLastRefreshTime] = useState<string | null>(null);
   const { toast } = useToast();
 
-  const load = async () => {
+  const REFRESH_INTERVAL = parseInt(import.meta.env.VITE_RAKE_TRANSFERS_REFRESH_MS || "25000");
+
+  const load = useCallback(async () => {
     try {
       const r = await backend.railmind.listRakeTransfers();
       setTransfers(r.rake_transfers);
+      setLastRefreshTime(new Date().toLocaleTimeString());
     } catch (err) {
       console.error(err);
       toast({ title: "Failed to load rake transfers", variant: "destructive" });
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    void load();
+    const interval = setInterval(() => void load(), REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [load, REFRESH_INTERVAL]);
 
   const approve = async (id: number) => {
     setApproving(id);
@@ -93,6 +101,11 @@ export default function RakeTransfersPage() {
         <div>
           <h2 className="text-2xl font-bold text-zinc-100">Rake Transfer Optimization</h2>
           <p className="text-sm text-zinc-500 mt-0.5">Graph-based cross-zone coach redistribution engine</p>
+          {lastRefreshTime && (
+            <p className="text-xs text-zinc-600 mt-2 flex items-center gap-1">
+              <Clock className="w-3 h-3" /> Last updated: {lastRefreshTime}
+            </p>
+          )}
         </div>
         <button
           onClick={optimize}

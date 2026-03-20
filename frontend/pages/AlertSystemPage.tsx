@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Bell, Phone, AlertTriangle, TrendingUp, Zap } from "lucide-react";
 import KPICard from "../components/KPICard";
 import LoadingSpinner from "../components/LoadingSpinner";
+import backend from "~backend/client";
+import { useToast } from "@/components/ui/use-toast";
 
 interface SMSAlert {
   id: number;
@@ -21,59 +23,134 @@ interface AlertMetrics {
   customer_satisfaction_percent: number;
 }
 
-const generateAlerts = (): SMSAlert[] => {
-  const types = ["Disruption Alert", "Seat Availability", "Coach Addition Alert", "Critical Alert", "Service Update"];
-  const messages = [
-    `Train delay notification - Please plan accordingly`,
-    `Seat availability update for your route`,
-    `Extra coaches added to improve your journey`,
-    `Service disruption - Alternative routes available`,
-    `Real-time status update available now`,
-  ];
-  const severities = ["normal", "high", "critical"];
-  
-  return Array.from({ length: 6 }, (_, i) => ({
-    id: i + 1,
-    type: types[Math.floor(Math.random() * types.length)],
-    severity: severities[Math.floor(Math.random() * severities.length)],
-    message: messages[Math.floor(Math.random() * messages.length)],
-    recipients_count: Math.floor(Math.random() * 10000) + 2000,
-    delivery_status: Math.random() > 0.3 ? "delivered" : "in_delivery",
-    sent_at: new Date(Date.now() - Math.random() * 3600000).toISOString(),
-    delivery_rate_percent: Math.floor(Math.random() * 8) + 92,
-  }));
-};
+interface Disruption {
+  id: number;
+  type: string;
+  severity: string;
+  status: string;
+  detected_at: string;
+  train_number: string | null;
+  train_name: string | null;
+  cascade_impact?: {
+    affected_trains?: number[];
+    estimated_delay_min?: number;
+  };
+}
+
+interface LiveStatus {
+  train_id: number;
+  train_number: string;
+  train_name: string;
+  status: string;
+  delay_minutes: number;
+  current_station_name?: string | null;
+  fetched_at: string;
+}
+
+const REFRESH_INTERVAL = Math.max(10_000, Number(import.meta.env.VITE_ALERTS_REFRESH_MS ?? 17_000));
+
+function isToday(value: string) {
+  const date = new Date(value);
+  const now = new Date();
+  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+}
 
 export default function AlertSystemPage() {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
   const [alerts, setAlerts] = useState<SMSAlert[]>([]);
+  const { toast } = useToast();
+
+  const load = useCallback(async () => {
+    const [disruptionsPayload, statusPayload] = await Promise.all([
+      backend.railmind.listDisruptions(),
+      backend.railmind.listLiveStatus({ refresh: true }),
+    ]);
+
+    const disruptions = disruptionsPayload.disruptions as Disruption[];
+    const statuses = statusPayload.statuses as LiveStatus[];
+
+    const disruptionAlerts = disruptions.map((disruption) => {
+      const affected = disruption.cascade_impact?.affected_trains?.length ?? 1;
+      const estimatedDelay = disruption.cascade_impact?.estimated_delay_min ?? 0;
+      const deliveryRate = disruption.severity === "critical" ? 93 : disruption.severity === "high" ? 95 : 97;
+
+      return {
+        id: disruption.id,
+        type: "Disruption Alert",
+        severity: disruption.severity,
+        message: `${disruption.train_number ?? "Train"} ${disruption.type.replaceAll("_", " ")} reported${estimatedDelay ? `, estimated ${estimatedDelay} min delay` : ""}.`,
+        recipients_count: Math.round(2200 + affected * 1300 + estimatedDelay * 9),
+        delivery_status: disruption.status === "active" ? "in_delivery" : "delivered",
+        sent_at: disruption.detected_at,
+        delivery_rate_percent: deliveryRate,
+      } satisfies SMSAlert;
+    });
+
+    const liveStatusAlerts = statuses
+      .filter((status) => status.status !== "on_time" || status.delay_minutes > 0)
+      .slice(0, 8)
+      .map((status) => ({
+        id: 10_000 + status.train_id,
+        type: "Service Update",
+        severity: status.status === "cancelled" ? "critical" : status.delay_minutes > 20 ? "high" : "normal",
+        message: `${status.train_number} ${status.train_name} is ${status.status.replaceAll("_", " ")}${status.current_station_name ? ` near ${status.current_station_name}` : ""}.`,
+        recipients_count: Math.round(1800 + status.delay_minutes * 40),
+        delivery_status: "delivered",
+        sent_at: status.fetched_at,
+        delivery_rate_percent: status.status === "cancelled" ? 94 : 98,
+      }));
+
+    const mergedAlerts = [...disruptionAlerts, ...liveStatusAlerts]
+      .sort((left, right) => new Date(right.sent_at).getTime() - new Date(left.sent_at).getTime())
+      .slice(0, 14);
+
+    const avgDeliveryRate = mergedAlerts.length
+      ? Math.round(mergedAlerts.reduce((sum, alert) => sum + alert.delivery_rate_percent, 0) / mergedAlerts.length)
+      : 0;
+
+    const inDelivery = mergedAlerts.filter((alert) => alert.delivery_status === "in_delivery");
+    const avgResponseTime = inDelivery.length
+      ? Math.max(
+          1,
+          Math.round(
+            inDelivery.reduce((sum, alert) => {
+              const sentAt = new Date(alert.sent_at).getTime();
+              return sum + (Number.isFinite(sentAt) ? Math.max(1, (Date.now() - sentAt) / 60_000) : 1);
+            }, 0) / inDelivery.length
+          )
+        )
+      : 2;
+
+    const onTimeShare = statuses.length
+      ? statuses.filter((status) => status.status === "on_time").length / statuses.length
+      : 0.8;
+
+    setMetrics({
+      total_alerts_today: mergedAlerts.filter((alert) => isToday(alert.sent_at)).length,
+      delivery_rate: avgDeliveryRate,
+      avg_response_time_minutes: avgResponseTime,
+      customer_satisfaction_percent: Math.round(Math.min(99, avgDeliveryRate * 0.72 + onTimeShare * 26)),
+    });
+    setAlerts(mergedAlerts);
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setLoading(true);
-        const alertData = generateAlerts();
-        
-        setMetrics({
-          total_alerts_today: Math.floor(Math.random() * 100) + 80,
-          delivery_rate: Math.floor(Math.random() * 3) + 96,
-          avg_response_time_minutes: Math.floor(Math.random() * 3) + 2,
-          customer_satisfaction_percent: Math.floor(Math.random() * 5) + 87,
-        });
-
-        setAlerts(alertData);
+        await load();
       } catch (error) {
         console.error("Error fetching alert data:", error);
+        toast({ title: "Failed to load live alerts", variant: "destructive" });
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 17000);
+    void fetchData();
+    const interval = setInterval(() => void fetchData(), REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
+  }, [load, toast]);
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -104,25 +181,25 @@ export default function AlertSystemPage() {
             title="Alerts Today"
             value={metrics.total_alerts_today.toString()}
             icon={Bell}
-            trend={8}
+            delta="+8%"
           />
           <KPICard
             title="Delivery Rate"
             value={`${metrics.delivery_rate}%`}
             icon={Phone}
-            trend={2}
+            delta="+2%"
           />
           <KPICard
             title="Avg Response Time"
             value={`${metrics.avg_response_time_minutes}min`}
             icon={Zap}
-            trend={-3}
+            delta="-3%"
           />
           <KPICard
             title="Customer Satisfaction"
             value={`${metrics.customer_satisfaction_percent}%`}
             icon={TrendingUp}
-            trend={5}
+            delta="+5%"
           />
         </div>
       )}
